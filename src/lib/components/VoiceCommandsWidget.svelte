@@ -33,6 +33,7 @@
   }
 
   function handleWindowClick(e: MouseEvent) {
+    if (!open) return;
     if (panelRef && !panelRef.contains(e.target as Node)) {
       onClose();
     }
@@ -92,7 +93,7 @@
     </div>
 
     <div class="border-t border-border px-3 py-1.5 text-[10px] text-text-muted">
-      Clic gauche sur 🎙 · {hotkey} · sélection + barre IA
+      Préfixe « Scribe, … » · {hotkey} pour dicter · bouton 🗣 Commandes ci-dessus
     </div>
   </div>
 {/if}

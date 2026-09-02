@@ -10,7 +10,7 @@ use commands::{
 
     ollama_install, ollama_pull_model, ollama_recommended_models, ollama_start_service,
 
-    ollama_status, ollama_summarize_note, ollama_transform_note, read_note, resolve_vault_file, save_app_config,
+    ollama_status, ollama_proactive_suggest, ollama_custom_prompt, ollama_summarize_note, ollama_transform_note, read_note, resolve_vault_file, save_app_config,
 
     search_vault, setup_voice, voice_check_deps, voice_get_status, voice_install_deps,
 
@@ -96,9 +96,13 @@ pub fn run() {
 
             ollama_start_service,
 
-            ollama_generate,
+    ollama_generate,
 
-            ollama_summarize_note,
+    ollama_custom_prompt,
+
+    ollama_summarize_note,
+
+            ollama_proactive_suggest,
 
             ollama_transform_note,
 

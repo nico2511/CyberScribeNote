@@ -1,6 +1,6 @@
 {
   "name": "cyberscribe-note",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Prise de notes locale offline-first avec IA (Ollama) et voix",
   "type": "module",
   "scripts": {

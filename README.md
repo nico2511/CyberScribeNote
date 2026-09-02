@@ -4,14 +4,16 @@ Application de prise de notes **100 % locale**, offline-first, avec IA via [Olla
 
 Basé sur le plan [CyberScribe Notes](Docs/CyberScribe_Notes_Plan.md) et inspiré de [CyberScribe](https://github.com/nico2511/CyberScribe) pour la partie vocale.
 
-## Fonctionnalités (MVP v0.1)
+## Fonctionnalités (v0.2.0)
 
 - Vault Markdown dans `Documents/CyberScribeNote/vault`
 - Arborescence dossiers / notes — création, suppression, **glisser-déposer** pour classer
 - Éditeur Markdown avec aperçu, barre d'outils et sauvegarde automatique
 - Thèmes **Light Pastel** et **Dark Pastel**
 - Recherche rapide **Ctrl+T**
-- **Compagnon IA** : suggestions latérales (appliquer / ignorer) avec contexte de note
+- **Compagnon IA** : suggestions proactives et manuelles (appliquer / ignorer) avec contexte de note
+- Correction typo locale automatique + diff des suggestions
+- Aperçu Markdown avec redimensionnement d'images (S / M / L / 100 %)
 - Résumé, reformulation, correction et traduction via Ollama
 - Panneau **Réglages** (Ctrl+,) : Ollama, voix, modèles Whisper
 - Images copiées localement (`_media/` par note)

@@ -13,6 +13,7 @@
     VoiceStatus,
     WhisperCacheEntry,
   } from "$lib/types";
+  import { APP_NAME, APP_VERSION } from "$lib/version";
 
   interface Props {
     open: boolean;
@@ -511,6 +512,10 @@
         {#if error}
           <p class="rounded-xl bg-danger/10 px-3 py-2 text-xs text-danger">{error}</p>
         {/if}
+
+        <footer class="border-t border-border pt-4 text-center text-[10px] text-text-muted">
+          {APP_NAME} v{APP_VERSION}
+        </footer>
       </div>
     </div>
   </div>

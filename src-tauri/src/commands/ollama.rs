@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 use std::process::Command;
 use tauri::{AppHandle, Emitter};
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 const DEFAULT_HOST: &str = "http://127.0.0.1:11434";
 
 fn host_url() -> String {
@@ -391,27 +394,101 @@ pub fn ollama_install() -> Result<String, String> {
 
 #[tauri::command]
 pub fn ollama_start_service() -> Result<String, String> {
-    if !cli_installed() {
-        return Err("Ollama n'est pas installé ou absent du PATH.".into());
+    if !cli_installed() && find_ollama_app().is_none() {
+        return Err("Ollama n'est pas installé. Installez-le depuis Réglages.".into());
     }
 
     #[cfg(windows)]
     {
-        Command::new("cmd")
-            .args(["/C", "start", "", "ollama", "app"])
-            .spawn()
-            .map_err(|e| e.to_string())?;
+        if let Some(exe) = find_ollama_app() {
+            std::process::Command::new(&exe)
+                .spawn()
+                .map_err(|e| format!("Impossible de lancer Ollama : {e}"))?;
+        } else {
+            std::process::Command::new("cmd")
+                .args(["/C", "start", "", "ollama", "app"])
+                .spawn()
+                .map_err(|e| e.to_string())?;
+        }
+
+        if cli_installed() {
+            let mut serve = std::process::Command::new("ollama");
+            serve.arg("serve");
+            #[cfg(windows)]
+            serve.creation_flags(0x08000000);
+            let _ = serve.spawn();
+        }
+
+        return Ok("Ollama lancé. Attendez quelques secondes…".into());
     }
 
     #[cfg(not(windows))]
     {
-        Command::new("ollama")
-            .arg("serve")
-            .spawn()
-            .map_err(|e| e.to_string())?;
+        if let Some(exe) = find_ollama_app() {
+            std::process::Command::new(&exe)
+                .arg("serve")
+                .spawn()
+                .map_err(|e| e.to_string())?;
+        } else {
+            std::process::Command::new("ollama")
+                .arg("serve")
+                .spawn()
+                .map_err(|e| e.to_string())?;
+        }
+
+        return Ok("Démarrage d'Ollama demandé.".into());
+    }
+}
+
+#[cfg(windows)]
+fn find_ollama_app() -> Option<std::path::PathBuf> {
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        let candidate = std::path::PathBuf::from(local)
+            .join("Programs")
+            .join("Ollama")
+            .join("Ollama.exe");
+        if candidate.exists() {
+            return Some(candidate);
+        }
     }
 
-    Ok("Démarrage d'Ollama demandé.".into())
+    if let Ok(output) = Command::new("where").arg("ollama").output() {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if !path.is_empty() {
+                let cli_path = std::path::PathBuf::from(&path);
+                if let Some(dir) = cli_path.parent() {
+                    let gui = dir.join("Ollama.exe");
+                    if gui.exists() {
+                        return Some(gui);
+                    }
+                }
+                return Some(cli_path);
+            }
+        }
+    }
+
+    None
+}
+
+#[cfg(not(windows))]
+fn find_ollama_app() -> Option<std::path::PathBuf> {
+    Command::new("which")
+        .arg("ollama")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .next()
+                .map(|p| std::path::PathBuf::from(p.trim()))
+        })
 }
 
 #[tauri::command]
@@ -447,6 +524,31 @@ pub async fn ollama_generate(prompt: String, model: Option<String>) -> Result<St
 }
 
 #[tauri::command]
+pub async fn ollama_custom_prompt(
+    instruction: String,
+    content: String,
+    model: Option<String>,
+    note_context: Option<String>,
+) -> Result<String, String> {
+    let instruction = instruction.trim();
+    if instruction.is_empty() {
+        return Err("Le prompt personnalisé est vide.".into());
+    }
+
+    let context_block = format_note_context(note_context.as_deref());
+    let prompt = format!(
+        "Tu es un assistant de prise de notes.{context_block}\n\n\
+         Consigne de l'utilisateur :\n{instruction}\n\n\
+         Texte à traiter :\n---\n{content}\n---\n\n\
+         Réponds uniquement avec le résultat demandé, sans introduction ni commentaire."
+    );
+
+    ollama_generate(prompt, model)
+        .await
+        .map(|raw| sanitize_ai_response(&raw, "reformulate", &content))
+}
+
+#[tauri::command]
 pub async fn ollama_summarize_note(
     content: String,
     model: Option<String>,
@@ -475,8 +577,17 @@ pub async fn ollama_transform_note(
              Réponds uniquement avec le texte reformulé.\n\n{content}"
         ),
         "correct" => format!(
-            "Corrige l'orthographe et la grammaire de ce texte en français.{context_block} \
-             Réponds uniquement avec le texte corrigé.\n\n{content}"
+            "Corrige l'orthographe et la grammaire du texte ci-dessous en tenant compte du SENS de la phrase.\n\
+             Règles STRICTES :\n\
+             - Réponds avec le texte corrigé SEUL, sans introduction ni commentaire\n\
+             - Pas de guillemets, pas de « Voici… »\n\
+             - N'ajoute AUCUN mot, phrase ou idée\n\
+             - Ne reformule pas, ne résume pas, ne paraphrase pas\n\
+             - Ignore tout contexte externe à ce passage\n\
+             - Si un mot ressemble à un mot français mais n'a pas de sens dans la phrase \
+               (ex. « fère » après « encore »), choisis le mot qui convient (ex. « faire »)\n\
+             - Corrige TOUTES les fautes du passage, pas seulement une partie\n\
+             - Même sens exact, structure proche\n\n{content}"
         ),
         "translate_en" => format!(
             "Traduis ce texte en anglais.{context_block} \
@@ -484,7 +595,186 @@ pub async fn ollama_transform_note(
         ),
         _ => return Err(format!("Action IA inconnue : {action}")),
     };
-    ollama_generate(prompt, model).await
+    ollama_generate(prompt, model).await.map(|raw| sanitize_ai_response(&raw, &action, &content))
+}
+
+fn sanitize_ai_response(raw: &str, action: &str, original: &str) -> String {
+    let mut text = raw.trim().to_string();
+
+    if text.starts_with("```") {
+        text = text
+            .lines()
+            .skip(1)
+            .take_while(|l| !l.trim().starts_with("```"))
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+
+    let lower = text.to_lowercase();
+    for marker in [
+        "voici le texte corrigé",
+        "voici le texte reformulé",
+        "voici la traduction",
+        "je vais essayer",
+        "texte corrigé :",
+        "texte reformulé :",
+    ] {
+        if let Some(idx) = lower.find(marker) {
+            let tail = text[idx..].splitn(2, ':').nth(1).unwrap_or("").trim();
+            if tail.len() > 8 {
+                text = tail.to_string();
+                break;
+            }
+        }
+    }
+
+    text = text.trim().trim_matches('"').trim_matches('«').trim_matches('»').to_string();
+
+    if action == "correct" {
+        let orig_words = original.split_whitespace().count();
+        let out_words = text.split_whitespace().count();
+        if orig_words > 0 && out_words > orig_words + orig_words / 2 + 3 {
+            return original.to_string();
+        }
+    }
+
+    if text.is_empty() {
+        original.to_string()
+    } else {
+        text
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProactiveSuggestion {
+    pub suggest: bool,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub proposed: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[tauri::command]
+pub async fn ollama_proactive_suggest(
+    paragraph: String,
+    note_excerpt: Option<String>,
+    note_context: Option<String>,
+    model: Option<String>,
+) -> Result<ProactiveSuggestion, String> {
+    if paragraph.trim().len() < 12 {
+        return Ok(ProactiveSuggestion {
+            suggest: false,
+            label: None,
+            proposed: None,
+            reason: None,
+        });
+    }
+
+    let context_block = format_note_context(note_context.as_deref());
+    let excerpt_block = note_excerpt
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|excerpt| format!("\n\nExtrait de la note (contexte global) :\n---\n{excerpt}\n---"))
+        .unwrap_or_default();
+
+    let prompt = format!(
+        "Tu es un compagnon d'écriture discret dans une app de notes.{context_block}\
+         Analyse UNIQUEMENT le passage ci-dessous — n'utilise PAS d'autres parties de la note.{excerpt_block}\n\n\
+         Passage :\n---\n{paragraph}\n---\n\n\
+         Si le passage contient des fautes d'orthographe ou de grammaire :\n\
+         {{\"suggest\":true,\"label\":\"Correction\",\"proposed\":\"...\",\"reason\":\"...\"}}\n\
+         - \"proposed\" = la MÊME phrase corrigée (mêmes mots, même sens, longueur similaire)\n\
+         - NE PAS reformuler, NE PAS ajouter de contenu du contexte de la note\n\n\
+         Si le passage est correct mais une reformulation stylistique aiderait (sans fautes) :\n\
+         {{\"suggest\":true,\"label\":\"Reformulation\",\"proposed\":\"...\",\"reason\":\"...\"}}\n\n\
+         Sinon : {{\"suggest\":false}}\n\
+         Pas de markdown, pas de texte hors JSON."
+    );
+
+    let raw = ollama_generate(prompt, model).await?;
+    let mut parsed = parse_proactive_response(&raw);
+    if parsed.suggest {
+        if let Some(raw_proposed) = parsed.proposed.take() {
+            let action = if parsed
+                .label
+                .as_deref()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains("reform")
+            {
+                "reformulate"
+            } else {
+                "correct"
+            };
+            let proposed = sanitize_ai_response(&raw_proposed, action, &paragraph);
+            let reject = proposed.trim().is_empty()
+                || proposed.trim() == paragraph.trim()
+                || (action == "correct"
+                    && paragraph.split_whitespace().count() > 0
+                    && proposed.split_whitespace().count() > paragraph.split_whitespace().count() + 2);
+
+            if reject {
+                parsed.suggest = false;
+                parsed.reason = None;
+            } else {
+                parsed.proposed = Some(proposed);
+            }
+        } else {
+            parsed.suggest = false;
+        }
+    }
+    Ok(parsed)
+}
+
+fn parse_proactive_response(raw: &str) -> ProactiveSuggestion {
+    let trimmed = raw.trim();
+    let json_body = if trimmed.starts_with("```") {
+        trimmed
+            .lines()
+            .skip(1)
+            .take_while(|line| !line.trim().starts_with("```"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else if let Some(start) = trimmed.find('{') {
+        if let Some(end) = trimmed.rfind('}') {
+            trimmed[start..=end].to_string()
+        } else {
+            trimmed.to_string()
+        }
+    } else {
+        trimmed.to_string()
+    };
+
+    if let Ok(parsed) = serde_json::from_str::<ProactiveSuggestion>(&json_body) {
+        if parsed.suggest {
+            let has_proposed = parsed
+                .proposed
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .is_some();
+            if has_proposed {
+                return parsed;
+            }
+        }
+        return ProactiveSuggestion {
+            suggest: false,
+            label: None,
+            proposed: None,
+            reason: None,
+        };
+    }
+
+    ProactiveSuggestion {
+        suggest: false,
+        label: None,
+        proposed: None,
+        reason: None,
+    }
 }
 
 fn format_note_context(note_context: Option<&str>) -> String {

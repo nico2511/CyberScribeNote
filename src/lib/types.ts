@@ -64,7 +64,9 @@ export interface PullProgress {
 
 export type ThemeMode = "light" | "dark";
 
-export type AiAction = "summarize" | "reformulate" | "correct" | "translate_en";
+export type AiAction = "summarize" | "reformulate" | "correct" | "translate_en" | "custom";
+
+export type AiSuggestionSource = "manual" | "proactive";
 
 export interface AiSuggestion {
   id: string;
@@ -73,7 +75,16 @@ export interface AiSuggestion {
   scope: string;
   proposedText: string;
   originalText: string;
+  source?: AiSuggestionSource;
+  reason?: string;
   selection?: { start: number; end: number; text: string };
+}
+
+export interface ProactiveSuggestionResponse {
+  suggest: boolean;
+  label?: string;
+  proposed?: string;
+  reason?: string;
 }
 
 export interface VoiceStatus {

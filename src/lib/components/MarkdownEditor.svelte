@@ -1,6 +1,4 @@
 <script lang="ts">
-  import { marked, Renderer } from "marked";
-  import SelectionAiToolbar from "./SelectionAiToolbar.svelte";
   import EditorContextMenu from "./EditorContextMenu.svelte";
   import type { AiAction } from "$lib/types";
   import type { AiActionRequest, TextSelection } from "$lib/voice/commands";
@@ -11,7 +9,9 @@
     wrapSelection,
     type TextRange,
   } from "$lib/markdown/format";
-  import { escapeHtml, resolveMediaUrl } from "$lib/vault/media";
+  import { buildPreviewHtml, setMarkdownImageWidth } from "$lib/markdown/render";
+  import { editingTargetAtCursor, lineAtCursor } from "$lib/note/paragraph";
+  import type { ParagraphSpan } from "$lib/note/paragraph";
 
   interface Props {
     content: string;
@@ -33,6 +33,13 @@
     onExport: () => void;
     onToggleCompanion?: () => void;
     companionOpen?: boolean;
+    onSelectionChange?: (selection: TextSelection | null) => void;
+    onEditingIdle?: (span: ParagraphSpan) => void;
+    onAutoTypoFix?: (span: ParagraphSpan) => void;
+    autoTypoFixEnabled?: boolean;
+    highlightRange?: { start: number; end: number } | null;
+    editorCursor?: number | null;
+    onCursorRestored?: () => void;
   }
 
   let {
@@ -55,6 +62,13 @@
     onExport,
     onToggleCompanion,
     companionOpen = false,
+    onSelectionChange,
+    onEditingIdle,
+    onAutoTypoFix,
+    autoTypoFixEnabled = true,
+    highlightRange = null,
+    editorCursor = null,
+    onCursorRestored,
   }: Props = $props();
 
   let aiMenuOpen = $state(false);
@@ -65,23 +79,37 @@
   let editorMenuOpen = $state(false);
   let editorMenuPos = $state({ x: 0, y: 0 });
   let editorMenuHasSelection = $state(false);
+  let proactiveTimer: ReturnType<typeof setTimeout> | null = null;
+  let autoTypoTimer: ReturnType<typeof setTimeout> | null = null;
+
+  $effect(() => {
+    const range = highlightRange;
+    const cursor = editorCursor;
+    const el = textareaRef;
+    if (cursor != null && el && !preview) {
+      el.focus({ preventScroll: false });
+      el.setSelectionRange(cursor, cursor);
+      onCursorRestored?.();
+    } else if (range && el && !preview) {
+      el.focus({ preventScroll: false });
+      el.setSelectionRange(range.start, range.end);
+    }
+  });
 
   let html = $derived.by(() => {
-    if (!preview || !vaultPath) {
-      return marked.parse(content || "", { async: false }) as string;
-    }
-
-    const renderer = new Renderer();
-    renderer.image = ({ href, title, text }) => {
-      if (!href) return "";
-      const src = resolveMediaUrl(href, notePath, vaultPath);
-      const alt = escapeHtml(text || "");
-      const titleAttr = title ? ` title="${escapeHtml(title)}"` : "";
-      return `<img src="${src}" alt="${alt}"${titleAttr} loading="lazy" />`;
-    };
-
-    return marked.parse(content || "", { async: false, renderer }) as string;
+    if (!preview) return "";
+    return buildPreviewHtml(content, notePath, vaultPath);
   });
+
+  function handlePreviewClick(e: MouseEvent) {
+    const btn = (e.target as HTMLElement).closest("[data-image-width]") as HTMLElement | null;
+    if (!btn) return;
+    e.preventDefault();
+    const path = btn.getAttribute("data-md-image");
+    const width = btn.getAttribute("data-image-width");
+    if (!path || !width) return;
+    onChange(setMarkdownImageWidth(content, path, width));
+  }
 
   const aiActions: { id: AiAction; label: string; desc: string }[] = [
     { id: "summarize", label: "Résumer", desc: "Synthèse (note ou sélection)" },
@@ -94,21 +122,27 @@
     const el = textareaRef;
     if (!el || preview) {
       selection = null;
+      onSelectionChange?.(null);
       return;
     }
     const start = el.selectionStart;
     const end = el.selectionEnd;
     if (start === end) {
-      if (!selectionPinned) selection = null;
+      if (!selectionPinned) {
+        selection = null;
+        onSelectionChange?.(null);
+      }
       return;
     }
     const text = content.slice(start, end);
     if (!text.trim()) {
       selection = null;
+      onSelectionChange?.(null);
       return;
     }
     selection = { start, end, text };
     selectionPinned = false;
+    onSelectionChange?.(selection);
   }
 
   function toggleAiMenu(e: MouseEvent) {
@@ -123,12 +157,6 @@
     readSelection();
     onAiAction({ action, selection: selection ?? undefined });
     selection = null;
-  }
-
-  function handleSelectionAction(action: AiAction, sel: TextSelection) {
-    onAiAction({ action, selection: sel });
-    selection = null;
-    selectionPinned = false;
   }
 
   function handleWindowClick(e: MouseEvent) {
@@ -207,6 +235,35 @@
     selectionPinned = false;
   }
 
+  function scheduleAutoTypoCheck() {
+    if (!onAutoTypoFix || !autoTypoFixEnabled || preview) return;
+    if (autoTypoTimer) clearTimeout(autoTypoTimer);
+    autoTypoTimer = setTimeout(() => {
+      const el = textareaRef;
+      if (!el || preview) return;
+      const span = lineAtCursor(content, el.selectionStart);
+      if (span) onAutoTypoFix(span);
+    }, 1200);
+  }
+
+  function scheduleProactiveCheck() {
+    if (!onEditingIdle || preview) return;
+    if (proactiveTimer) clearTimeout(proactiveTimer);
+    proactiveTimer = setTimeout(() => {
+      const el = textareaRef;
+      if (!el || preview) return;
+      const span = editingTargetAtCursor(content, el.selectionStart);
+      if (span) onEditingIdle(span);
+    }, 4000);
+  }
+
+  function handleEditorInput(e: Event) {
+    const value = (e.currentTarget as HTMLTextAreaElement).value;
+    onChange(value);
+    scheduleAutoTypoCheck();
+    scheduleProactiveCheck();
+  }
+
   function pathsFromDataTransfer(dataTransfer: DataTransfer | null): string[] {
     const paths: string[] = [];
     for (const file of dataTransfer?.files ?? []) {
@@ -273,9 +330,6 @@
         {:else}
           Sauvegardé
         {/if}
-        {#if selection && !preview}
-          · <span class="text-accent-lavender">sélection active</span>
-        {/if}
       </p>
     </div>
 
@@ -297,27 +351,28 @@
         🖼 Image
       </button>
 
-      <div class="relative flex items-center gap-2" bind:this={aiMenuRef}>
+      <div class="relative flex items-stretch overflow-hidden rounded-2xl border border-border" bind:this={aiMenuRef}>
         {#if onToggleCompanion}
           <button
             type="button"
-            class="rounded-2xl border border-border px-3 py-1.5 text-xs transition hover:bg-surface-muted {companionOpen
+            class="bg-surface px-3 py-1.5 text-xs transition hover:bg-surface-muted {companionOpen
               ? 'bg-accent-lavender/30'
-              : 'bg-surface'}"
+              : ''}"
             onclick={onToggleCompanion}
-            title="Panneau suggestions IA"
+            title="Afficher / masquer le panneau suggestions"
           >
-            ◈ Compagnon
+            ◈ Compagnon IA
           </button>
         {/if}
         <button
           type="button"
-          class="rounded-2xl border border-border bg-surface px-3 py-1.5 text-xs transition hover:bg-surface-muted disabled:opacity-40"
+          class="border-l border-border bg-surface px-2 py-1.5 text-xs transition hover:bg-surface-muted disabled:opacity-40"
           disabled={aiLoading}
-          title={ollamaAvailable ? "Actions IA via Ollama" : "Configurez Ollama dans les réglages"}
+          title={ollamaAvailable ? "Actions IA (suggestion dans le panneau)" : "Configurez Ollama dans les réglages"}
           onclick={toggleAiMenu}
+          aria-label="Menu actions IA"
         >
-          {aiLoading ? "IA…" : "✦ IA ▾"}
+          {aiLoading ? "…" : "▾"}
         </button>
         {#if aiMenuOpen}
           <div
@@ -370,19 +425,6 @@
     </div>
   </header>
 
-  {#if selection && !preview}
-    <SelectionAiToolbar
-      {selection}
-      {ollamaAvailable}
-      {aiLoading}
-      onAction={handleSelectionAction}
-      onClear={() => {
-        selection = null;
-        selectionPinned = false;
-      }}
-    />
-  {/if}
-
   {#if !preview}
     <div
       class="flex flex-wrap items-center gap-1 border-b border-border bg-surface-muted/50 px-4 py-1.5"
@@ -410,15 +452,19 @@
     ondrop={handleDrop}
   >
     {#if preview}
-      <article class="prose-note flex-1 overflow-y-auto px-6 py-4">
+      <div
+        class="prose-note flex-1 overflow-y-auto px-6 py-4"
+        role="document"
+        onclick={handlePreviewClick}
+      >
         {@html html}
-      </article>
+      </div>
     {:else}
       <textarea
         bind:this={textareaRef}
         class="flex-1 resize-none bg-transparent px-6 py-4 font-mono text-sm leading-relaxed outline-none"
         value={content}
-        oninput={(e) => onChange(e.currentTarget.value)}
+        oninput={handleEditorInput}
         onselect={readSelection}
         onmouseup={readSelection}
         onkeyup={readSelection}

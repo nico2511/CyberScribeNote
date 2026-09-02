@@ -90,8 +90,40 @@ body {
 
 .prose-note ul,
 .prose-note ol {
-  padding-left: 1.5rem;
+  padding-left: 1.75rem;
   margin: 0.5rem 0;
+}
+
+.prose-note ul {
+  list-style-type: disc;
+}
+
+.prose-note ol {
+  list-style-type: decimal;
+}
+
+.prose-note li {
+  display: list-item;
+  margin: 0.25rem 0;
+  line-height: 1.6;
+}
+
+.prose-note li > p {
+  margin: 0;
+}
+
+.prose-note ul ul {
+  list-style-type: circle;
+  margin-top: 0.25rem;
+}
+
+.prose-note ol ol {
+  list-style-type: lower-alpha;
+}
+
+.prose-note ul ol,
+.prose-note ol ul {
+  margin-top: 0.25rem;
 }
 
 .prose-note code {
@@ -120,8 +152,88 @@ body {
 }
 
 .prose-note img {
-  max-width: 100%;
+  max-width: min(100%, 480px);
+  width: auto;
+  height: auto;
   border-radius: var(--radius-xl);
+}
+
+.prose-note table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.75rem 0;
+  font-size: 0.9rem;
+}
+
+.prose-note th,
+.prose-note td {
+  border: 1px solid var(--border);
+  padding: 0.45rem 0.65rem;
+  text-align: left;
+}
+
+.prose-note th {
+  background: var(--surface-muted);
+  font-weight: 600;
+}
+
+.prose-note tr:nth-child(even) td {
+  background: color-mix(in srgb, var(--surface-muted) 50%, transparent);
+}
+
+.note-figure {
+  margin: 0.75rem 0;
+  display: inline-block;
+  max-width: 100%;
+}
+
+.note-image-resize {
+  display: flex;
+  gap: 0.25rem;
+  margin-top: 0.35rem;
+}
+
+.note-image-resize button {
+  border: 1px solid var(--border);
+  background: var(--surface-muted);
+  border-radius: 0.4rem;
+  padding: 0.1rem 0.45rem;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.note-image-resize button:hover {
+  background: var(--accent-blue);
+  color: var(--text);
+}
+
+.note-context {
+  margin: 0 0 1rem;
+  padding: 0.75rem 1rem;
+  border-left: 3px solid var(--accent-lavender);
+  border-radius: var(--radius-xl);
+  background: color-mix(in srgb, var(--accent-lavender) 12%, var(--surface-muted));
+}
+
+.note-context-label {
+  display: block;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent-lavender);
+  margin-bottom: 0.35rem;
+}
+
+.note-context p {
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.note-context-inline {
+  border-left: 3px solid var(--accent-lavender);
+  background: color-mix(in srgb, var(--accent-lavender) 10%, var(--surface-muted));
 }
 
 /* Scrollbars doux */

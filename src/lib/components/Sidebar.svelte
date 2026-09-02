@@ -1,6 +1,7 @@
 <script lang="ts">
   import VaultTree from "./VaultTree.svelte";
   import type { VaultEntry } from "$lib/types";
+  import { APP_VERSION } from "$lib/version";
   import { canMoveVaultItem, readVaultDragData, type VaultDragPayload } from "$lib/vault/tree";
 
   interface Props {
@@ -62,7 +63,7 @@
   <div class="flex items-center justify-between border-b border-border px-4 py-3">
     <div>
       <h1 class="text-sm font-semibold tracking-tight">CyberScribeNote</h1>
-      <p class="text-xs text-text-muted">Vault local</p>
+      <p class="text-xs text-text-muted">Vault local · v{APP_VERSION}</p>
     </div>
     <span class="pixel-icon rounded-lg bg-accent-lavender/30 px-2 py-1 text-xs">◆</span>
   </div>

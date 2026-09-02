@@ -8,21 +8,32 @@
   import SearchPanel from "$lib/components/SearchPanel.svelte";
   import SettingsPanel from "$lib/components/SettingsPanel.svelte";
   import VoiceOverlay from "$lib/components/VoiceOverlay.svelte";
-  import VoiceCommandsWidget from "$lib/components/VoiceCommandsWidget.svelte";
   import AiCompanionPanel from "$lib/components/AiCompanionPanel.svelte";
   import { applyTheme, loadTheme, saveTheme, toggleTheme } from "$lib/stores/theme";
-  import { parseNoteContext, setNoteContext } from "$lib/note/frontmatter";
+  import { parseNoteContext, setNoteContext, ensureVisibleContextBlock } from "$lib/note/frontmatter";
+  import type { ParagraphSpan } from "$lib/note/paragraph";
+  import { loadProactiveEnabled, saveProactiveEnabled, loadAutoTypoFixEnabled, saveAutoTypoFixEnabled } from "$lib/stores/companion";
+  import { autoFixAllTypoLines, tryAutoFixSpan, lineNeedsAiTypoFix } from "$lib/ai/autoTypo";
+  import { sanitizeAiOutput } from "$lib/ai/sanitize";
+  import { hasMeaningfulDiff } from "$lib/ai/textDiff";
+import { buildAiProposal, buildLocalCorrection } from "$lib/ai/buildProposal";
+import { finalizeCorrection } from "$lib/ai/localCorrect";
+import { isFaithfulCorrection } from "$lib/ai/faithful";
+import { likelyNeedsCorrection } from "$lib/ai/typoHints";
+import { scanBodyTypoLines, scanBodyCleanLines, bodyHasTypoLines } from "$lib/note/scanTypos";
   import { insertTranscript, parseVoiceTranscript } from "$lib/voice/keywords";
-  import { replaceTextRange, type AiActionRequest } from "$lib/voice/commands";
+  import { replaceTextRange, type AiActionRequest, type TextSelection } from "$lib/voice/commands";
   import type {
     AiAction,
     OllamaStatus,
+    OllamaDetect,
     SearchResult,
     ThemeMode,
     VaultEntry,
     VoiceStatus,
     VoiceTranscript,
     AiSuggestion,
+    ProactiveSuggestionResponse,
   } from "$lib/types";
 
   let entries = $state<VaultEntry[]>([]);
@@ -36,8 +47,6 @@
   let theme = $state<ThemeMode>("light");
   let searchOpen = $state(false);
   let settingsOpen = $state(false);
-  let voiceMenuOpen = $state(false);
-  let voiceMenuPos = $state({ x: 0, y: 0 });
   let searchQuery = $state("");
   let searchResults = $state<SearchResult[]>([]);
   let searchLoading = $state(false);
@@ -52,6 +61,14 @@
   let aiLoading = $state(false);
   let companionOpen = $state(false);
   let aiSuggestions = $state<AiSuggestion[]>([]);
+  let proactiveEnabled = $state(true);
+  let autoTypoFixEnabled = $state(true);
+  let proactiveLoading = $state(false);
+  let editorCursor = $state<number | null>(null);
+  let editorSelection = $state<TextSelection | null>(null);
+  let autoTypoNoticeTimer: ReturnType<typeof setTimeout> | null = null;
+  let aiTypoFixBusy = false;
+  let proactiveStatus = $state("");
   let statusMessage = $state("");
   let voiceStatus = $state<VoiceStatus>({
     running: false,
@@ -76,14 +93,33 @@
 
   let activeModel = $derived(ollamaStatus.selectedModel || ollamaStatus.models[0] || "llama3.2");
   let noteContext = $derived(parseNoteContext(content));
+  let customPromptTargetLabel = $derived.by(() =>
+    editorSelection
+      ? `sélection (${editorSelection.text.length} car.)`
+      : "note entière",
+  );
+  let editorHighlight = $derived.by(() => {
+    const latest = aiSuggestions.find((s) => s.selection);
+    if (!latest?.selection) return null;
+    return { start: latest.selection.start, end: latest.selection.end };
+  });
 
-  let contextSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  let lastProactiveAt = 0;
+  let lastProactiveKey = "";
+  let voiceTranscriptChain: Promise<void> = Promise.resolve();
+  let noteScanTimer: ReturnType<typeof setTimeout> | null = null;
+  let fullTypoScanTimer: ReturnType<typeof setTimeout> | null = null;
+  let autoTypoFixBusy = false;
 
   async function refreshVoice() {
     voiceStatus = await invoke<VoiceStatus>("voice_get_status");
   }
 
   async function handleVoiceToggle() {
+    if (voiceStatus.transcribing) {
+      statusMessage = "Transcription en cours — patientez quelques secondes.";
+      return;
+    }
     try {
       await invoke("voice_toggle");
       await refreshVoice();
@@ -99,51 +135,228 @@
     }
   }
 
-  function openVoiceMenu(e: MouseEvent) {
-    e.preventDefault();
-    voiceMenuPos = { x: e.clientX, y: e.clientY };
-    voiceMenuOpen = true;
+  async function tryAiAutoTypoFix(span: ParagraphSpan, baseContent?: string): Promise<boolean> {
+    if (aiTypoFixBusy || !autoTypoFixEnabled || preview) return false;
+
+    const body = baseContent ?? content;
+    const lineText = body.slice(span.start, span.end);
+    if (!lineNeedsAiTypoFix(lineText)) return false;
+
+    aiTypoFixBusy = true;
+    try {
+      if (!ollamaStatus.available) {
+        const ok = await ensureOllamaRunning(true);
+        if (!ok) return false;
+      }
+
+      showAutoTypoNotice("Analyse de la phrase pour corriger les fautes…");
+      const corrected = await invoke<string>("ollama_transform_note", {
+        action: "correct",
+        content: lineText,
+        model: activeModel,
+        noteContext: null,
+      });
+      const proposal =
+        buildAiProposal("correct", lineText, corrected) ??
+        (() => {
+          const merged = finalizeCorrection(lineText, corrected);
+          if (hasMeaningfulDiff(lineText, merged) && isFaithfulCorrection(lineText, merged)) {
+            return merged;
+          }
+          return null;
+        })();
+      if (!proposal) return false;
+
+      const next = replaceTextRange(body, span.start, span.end, proposal);
+      if (next === body) return false;
+
+      applyAutoTypoResult(next, span.start + proposal.length, "✓ Fautes corrigées (analyse de la phrase)");
+      return true;
+    } catch {
+      return false;
+    } finally {
+      aiTypoFixBusy = false;
+    }
   }
 
-  function closeVoiceMenu() {
-    voiceMenuOpen = false;
+  async function runAiTypoFixPass(baseContent?: string) {
+    if (!autoTypoFixEnabled || !selectedPath || preview) return;
+
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const body = baseContent ?? content;
+      const lines = scanBodyTypoLines(body).filter((line) => {
+        const text = body.slice(line.start, line.end);
+        return lineNeedsAiTypoFix(text);
+      });
+      if (!lines.length) break;
+
+      const line = lines[0];
+      const text = body.slice(line.start, line.end);
+      const applied = await tryAiAutoTypoFix({ ...line, text }, body);
+      if (!applied) break;
+      baseContent = content;
+    }
+  }
+
+  function showAutoTypoNotice(detail: string) {
+    statusMessage = detail;
+    if (autoTypoNoticeTimer) clearTimeout(autoTypoNoticeTimer);
+    autoTypoNoticeTimer = setTimeout(() => {
+      if (statusMessage === detail) statusMessage = "";
+    }, 3500);
+  }
+
+  function applyAutoTypoResult(next: string, cursor: number, message: string) {
+    content = next;
+    editorCursor = cursor;
+    dirty = next !== savedContent;
+    scheduleAutoSave();
+    if (selectedPath && dirty) void persistNote(selectedPath, next);
+    scheduleFullTypoScan(800);
+    scheduleNoteScan(8000);
+    showAutoTypoNotice(message);
+  }
+
+  async function handleAutoTypoFix(_span: ParagraphSpan) {
+    if (!autoTypoFixEnabled || preview || voiceStatus.recording || voiceStatus.transcribing) return;
+    await runBatchAutoTypoFix();
+  }
+
+  async function runBatchAutoTypoFix() {
+    if (!autoTypoFixEnabled || !selectedPath || preview || autoTypoFixBusy) return;
+    autoTypoFixBusy = true;
+
+    try {
+      aiSuggestions = aiSuggestions.filter(
+        (s) => !(s.action === "correct" && s.source === "proactive"),
+      );
+
+      const before = content;
+      const { content: next, count } = autoFixAllTypoLines(content);
+      let working = content;
+      if (count > 0 && next !== before) {
+        working = next;
+        content = next;
+        dirty = next !== savedContent;
+        scheduleAutoSave();
+        if (selectedPath) await persistNote(selectedPath, next);
+        showAutoTypoNotice(`✓ ${count} faute${count > 1 ? "s" : ""} corrigée${count > 1 ? "s" : ""} automatiquement`);
+      }
+      await runAiTypoFixPass(working);
+      proactiveStatus = bodyHasTypoLines(content)
+        ? "Certaines fautes nécessitent une correction manuelle."
+        : count > 0
+          ? "Fautes corrigées."
+          : "";
+    } finally {
+      autoTypoFixBusy = false;
+    }
+  }
+
+  function handleAutoTypoToggle(enabled: boolean) {
+    autoTypoFixEnabled = enabled;
+    saveAutoTypoFixEnabled(enabled);
+    if (enabled) runBatchAutoTypoFix();
+  }
+
+  function appendTranscript(fragment: string) {
+    content = insertTranscript(content, fragment);
+    handleContentChange(content);
+    if (autoTypoFixEnabled) {
+      queueMicrotask(() => runBatchAutoTypoFix());
+    }
   }
 
   async function handleVoiceTranscript(text: string) {
-    if (!text.trim()) {
-      statusMessage = "Aucune parole détectée.";
-      return;
-    }
-
-    const parsed = parseVoiceTranscript(text);
-
-    if (parsed.kind === "search") {
-      openSearch();
-      await runSearch(parsed.query);
-      statusMessage = `Recherche vocale : ${parsed.query}`;
-      return;
-    }
-
-    if (parsed.kind === "ai") {
-      if (!selectedPath) {
-        statusMessage = "Ouvrez une note pour les commandes IA vocales.";
+    voiceTranscriptChain = voiceTranscriptChain.then(async () => {
+      if (!text.trim()) {
+        statusMessage = "Aucune parole détectée — parlez un peu plus fort ou plus longtemps.";
         return;
       }
-      await handleAiAction({ action: parsed.action });
-      return;
-    }
 
-    if (!selectedPath) {
-      statusMessage = "Ouvrez une note pour insérer la transcription.";
-      return;
-    }
+      const parsed = parseVoiceTranscript(text);
 
-    handleContentChange(insertTranscript(content, parsed.text));
-    statusMessage = "Transcription insérée.";
+      if (parsed.kind === "search") {
+        openSearch();
+        await runSearch(parsed.query);
+        statusMessage = `Recherche vocale : ${parsed.query}`;
+        return;
+      }
+
+      if (parsed.kind === "ai") {
+        if (!selectedPath) {
+          statusMessage = "Ouvrez une note pour les commandes IA vocales.";
+          return;
+        }
+        await handleAiAction({ action: parsed.action });
+        return;
+      }
+
+      if (!selectedPath) {
+        statusMessage = "Ouvrez une note pour insérer la transcription.";
+        return;
+      }
+
+      appendTranscript(parsed.text);
+      statusMessage = "Transcription insérée.";
+    });
+
+    await voiceTranscriptChain;
   }
 
   async function refreshOllama() {
     ollamaStatus = await invoke<OllamaStatus>("ollama_status");
+  }
+
+  async function ensureOllamaRunning(silent = false) {
+    await refreshOllama();
+    if (ollamaStatus.available) return true;
+
+    try {
+      const detect = await invoke<OllamaDetect>("ollama_detect");
+      if (!detect.cliInstalled && !detect.serviceRunning) {
+        try {
+          await invoke<string>("ollama_start_service");
+        } catch {
+          return false;
+        }
+      } else if (!detect.serviceRunning) {
+        await invoke<string>("ollama_start_service");
+      }
+
+      if (!silent) {
+        statusMessage = "Démarrage d'Ollama…";
+      }
+
+      for (const delay of [2500, 3500, 5000]) {
+        await new Promise((r) => setTimeout(r, delay));
+        await refreshOllama();
+        if (ollamaStatus.available) {
+          if (!silent) {
+            statusMessage = "Ollama connecté.";
+          }
+          return true;
+        }
+      }
+    } catch (e) {
+      if (!silent) {
+        statusMessage = String(e);
+      }
+    }
+
+    return ollamaStatus.available;
+  }
+
+  async function handleOllamaHeaderClick() {
+    if (ollamaStatus.available) {
+      openSettings();
+      return;
+    }
+    const ok = await ensureOllamaRunning();
+    if (!ok) {
+      openSettings();
+      statusMessage = "Ollama hors ligne — lancez-le ou installez-le dans Réglages.";
+    }
   }
 
   async function refreshVault() {
@@ -156,11 +369,22 @@
       await persistNote(selectedPath, content);
     }
     selectedPath = path;
-    content = await invoke<string>("read_note", { relativePath: path });
+    const raw = await invoke<string>("read_note", { relativePath: path });
+    content = ensureVisibleContextBlock(raw);
     savedContent = content;
     dirty = false;
     preview = false;
     aiSuggestions = [];
+    editorSelection = null;
+    lastProactiveKey = "";
+    companionOpen = true;
+    if (content !== raw) {
+      await persistNote(path, content);
+    }
+    scheduleNoteScan(4000);
+    if (autoTypoFixEnabled) {
+      queueMicrotask(() => void runBatchAutoTypoFix());
+    }
   }
 
   async function persistNote(path: string, body: string) {
@@ -182,10 +406,20 @@
     }, 1200);
   }
 
+  function scheduleFullTypoScan(delayMs = 1200) {
+    if (!autoTypoFixEnabled || !selectedPath || preview) return;
+    if (fullTypoScanTimer) clearTimeout(fullTypoScanTimer);
+    fullTypoScanTimer = setTimeout(() => {
+      void runBatchAutoTypoFix();
+    }, delayMs);
+  }
+
   function handleContentChange(value: string) {
     content = value;
     dirty = value !== savedContent;
     scheduleAutoSave();
+    scheduleFullTypoScan(1200);
+    scheduleNoteScan(8000);
   }
 
   async function handleCreateNote(parentPath: string) {
@@ -242,10 +476,13 @@
     const targetText = sel?.text ?? content;
     if (!targetText.trim()) return;
 
-    if (!ollamaStatus.available) {
-      settingsOpen = true;
-      statusMessage = "Configurez Ollama dans les réglages.";
-      return;
+    if (!ollamaStatus.available && action !== "correct") {
+      const started = await ensureOllamaRunning(true);
+      if (!started) {
+        settingsOpen = true;
+        statusMessage = "Configurez ou démarrez Ollama dans les réglages.";
+        return;
+      }
     }
 
     aiLoading = true;
@@ -255,14 +492,18 @@
       reformulate: "Reformulation",
       correct: "Correction",
       translate_en: "Traduction",
+      custom: "Prompt custom",
     };
     const scope = sel ? "sélection" : "note";
     statusMessage = `${labels[action]} (${scope}) — suggestion en cours…`;
 
     try {
-      let result: string;
+      let result = "";
       const ctx = noteContext.trim() || null;
-      if (action === "summarize") {
+
+      if (action === "correct" && !ollamaStatus.available) {
+        result = "";
+      } else if (action === "summarize") {
         result = await invoke<string>("ollama_summarize_note", {
           content: targetText,
           model: activeModel,
@@ -273,8 +514,38 @@
           action,
           content: targetText,
           model: activeModel,
-          noteContext: ctx,
+          noteContext: action === "correct" ? null : ctx,
         });
+      }
+
+      const proposal = buildAiProposal(action, targetText, result);
+      if (!proposal && action === "correct") {
+        const localOnly = buildLocalCorrection(targetText);
+        if (localOnly && hasMeaningfulDiff(targetText, localOnly)) {
+          aiSuggestions = [
+            {
+              id: crypto.randomUUID(),
+              action,
+              label: labels[action],
+              scope,
+              proposedText: localOnly,
+              originalText: targetText,
+              source: "manual" as const,
+              selection: sel ? { start: sel.start, end: sel.end, text: sel.text } : undefined,
+            },
+            ...aiSuggestions,
+          ].slice(0, 12);
+          statusMessage = "Correction locale proposée.";
+          return;
+        }
+      }
+
+      if (!proposal) {
+        statusMessage =
+          action === "correct"
+            ? "Aucune correction trouvée pour ce passage."
+            : "Réponse IA vide — réessayez.";
+        return;
       }
 
       aiSuggestions = [
@@ -283,13 +554,99 @@
           action,
           label: labels[action],
           scope,
-          proposedText: result.trim(),
+          proposedText: proposal,
           originalText: targetText,
+          source: "manual" as const,
           selection: sel ? { start: sel.start, end: sel.end, text: sel.text } : undefined,
         },
         ...aiSuggestions,
       ].slice(0, 12);
       statusMessage = `Suggestion « ${labels[action]} » prête — appliquez ou ignorez.`;
+    } catch (e) {
+      if (action === "correct") {
+        const proposal = buildAiProposal("correct", targetText, "");
+        if (proposal) {
+          aiSuggestions = [
+            {
+              id: crypto.randomUUID(),
+              action,
+              label: labels[action],
+              scope,
+              proposedText: proposal,
+              originalText: targetText,
+              source: "manual" as const,
+              selection: sel ? { start: sel.start, end: sel.end, text: sel.text } : undefined,
+            },
+            ...aiSuggestions,
+          ].slice(0, 12);
+          statusMessage = "Correction locale proposée.";
+          return;
+        }
+      }
+      statusMessage = `Erreur IA : ${e}`;
+    } finally {
+      aiLoading = false;
+    }
+  }
+
+  async function handleCustomPrompt(instruction: string) {
+    if (!instruction.trim() || !selectedPath || preview) return;
+
+    const sel = editorSelection;
+    const targetText = sel?.text ?? content;
+    if (!targetText.trim()) {
+      statusMessage = "Rien à traiter — sélectionnez du texte ou écrivez dans la note.";
+      return;
+    }
+
+    if (!ollamaStatus.available) {
+      const started = await ensureOllamaRunning(true);
+      if (!started) {
+        settingsOpen = true;
+        statusMessage = "Configurez ou démarrez Ollama dans les réglages.";
+        return;
+      }
+    }
+
+    aiLoading = true;
+    companionOpen = true;
+    const scope = sel ? "sélection" : "note";
+    statusMessage = `Prompt custom (${scope}) — en cours…`;
+
+    try {
+      const result = await invoke<string>("ollama_custom_prompt", {
+        instruction: instruction.trim(),
+        content: targetText,
+        model: activeModel,
+        noteContext: noteContext.trim() || null,
+      });
+
+      const proposal = buildAiProposal("custom", targetText, result);
+      if (!proposal) {
+        statusMessage = "Réponse IA vide — modifiez le prompt ou réessayez.";
+        return;
+      }
+
+      const label =
+        instruction.trim().length > 42
+          ? `Custom : ${instruction.trim().slice(0, 39)}…`
+          : `Custom : ${instruction.trim()}`;
+
+      aiSuggestions = [
+        {
+          id: crypto.randomUUID(),
+          action: "custom" as const,
+          label,
+          scope,
+          proposedText: proposal,
+          originalText: targetText,
+          source: "manual" as const,
+          reason: instruction.trim(),
+          selection: sel ? { start: sel.start, end: sel.end, text: sel.text } : undefined,
+        },
+        ...aiSuggestions,
+      ].slice(0, 12);
+      statusMessage = "Suggestion custom prête — appliquez ou ignorez.";
     } catch (e) {
       statusMessage = `Erreur IA : ${e}`;
     } finally {
@@ -325,14 +682,165 @@
     aiSuggestions = aiSuggestions.filter((s) => s.id !== id);
   }
 
+  function toggleCompanion() {
+    companionOpen = !companionOpen;
+    if (companionOpen) {
+      if (autoTypoFixEnabled) void runBatchAutoTypoFix();
+      scheduleNoteScan(5000);
+    }
+  }
+
+  function scheduleNoteScan(delayMs = 5000) {
+    if (!selectedPath || preview) return;
+    if (!proactiveEnabled && !autoTypoFixEnabled) return;
+    if (noteScanTimer) clearTimeout(noteScanTimer);
+    noteScanTimer = setTimeout(() => {
+      void scanNoteForSuggestions();
+    }, delayMs);
+  }
+
+  function hasSuggestionForSpan(span: { start: number; end: number }) {
+    return aiSuggestions.some((s) => s.selection?.start === span.start && s.selection?.end === span.end);
+  }
+
+  async function scanNoteForSuggestions() {
+    if (!selectedPath || preview) return;
+
+    if (autoTypoFixEnabled && !aiLoading) {
+      await runBatchAutoTypoFix();
+    }
+
+    if (proactiveLoading || aiLoading || !proactiveEnabled) return;
+    if (bodyHasTypoLines(content)) {
+      proactiveStatus = "Correction des fautes…";
+      return;
+    }
+
+    const lines = scanBodyCleanLines(content);
+    const target = lines.find((line) => !hasSuggestionForSpan(line));
+    if (!target) return;
+
+    await processProactiveSpan(target, "passage repéré");
+  }
+
+  async function processProactiveSpan(span: ParagraphSpan, scopeLabel = "passage en cours") {
+    if (!proactiveEnabled || !selectedPath || preview) return;
+    if (likelyNeedsCorrection(span.text)) return;
+    if (bodyHasTypoLines(content)) return;
+
+    const minLen = likelyNeedsCorrection(span.text) ? 12 : 25;
+    if (span.text.trim().length < minLen) return;
+    if (aiLoading || proactiveLoading) return;
+
+    const now = Date.now();
+    const cooldown = likelyNeedsCorrection(span.text) ? 8000 : 20000;
+    const key = `${selectedPath}:${span.start}:${span.end}:${span.text.trim()}`;
+    if (now - lastProactiveAt < cooldown && key === lastProactiveKey) return;
+    if (key === lastProactiveKey && hasSuggestionForSpan(span)) return;
+
+    if (hasSuggestionForSpan(span)) return;
+
+    proactiveLoading = true;
+    companionOpen = true;
+    proactiveStatus = "Analyse du passage en cours…";
+    statusMessage = proactiveStatus;
+
+    const addSuggestion = (
+      action: AiAction,
+      label: string,
+      proposed: string,
+      reason?: string,
+      scopeLabel = "passage en cours",
+    ) => {
+      aiSuggestions = [
+        {
+          id: crypto.randomUUID(),
+          action,
+          label,
+          scope: scopeLabel,
+          source: "proactive" as const,
+          reason,
+          proposedText: proposed,
+          originalText: span.text,
+          selection: { start: span.start, end: span.end, text: span.text },
+        },
+        ...aiSuggestions,
+      ].slice(0, 12);
+      lastProactiveKey = key;
+      lastProactiveAt = now;
+      proactiveStatus = "";
+      statusMessage = "Suggestion proactive prête — appliquez ou ignorez.";
+    };
+
+    try {
+      // Pas de fautes évidentes → reformulation proactive (contexte note autorisé)
+      if (ollamaStatus.available) {
+        const result = await invoke<ProactiveSuggestionResponse>("ollama_proactive_suggest", {
+          paragraph: span.text,
+          noteExcerpt: content.slice(0, 1500),
+          noteContext: noteContext.trim() || null,
+          model: activeModel,
+        });
+
+        if (result.suggest && result.proposed?.trim()) {
+          const isCorrection = result.label?.toLowerCase().includes("correction");
+          const proposed = sanitizeAiOutput(
+            result.proposed,
+            isCorrection ? "correct" : "reformulate",
+          );
+          const action = isCorrection ? ("correct" as const) : ("reformulate" as const);
+          const faithful = isCorrection ? isFaithfulCorrection(span.text, proposed) : true;
+
+          if (proposed.trim() && hasMeaningfulDiff(span.text, proposed) && faithful) {
+            addSuggestion(
+              action,
+              result.label?.trim() || (isCorrection ? "Correction" : "Suggestion"),
+              proposed,
+              result.reason?.trim(),
+              scopeLabel,
+            );
+            return;
+          }
+        }
+      }
+
+      proactiveStatus = bodyHasTypoLines(content)
+        ? "Certaines fautes nécessitent une correction manuelle."
+        : "Aucune reformulation proposée pour ce passage.";
+      statusMessage = proactiveStatus;
+      lastProactiveAt = now;
+    } catch (e) {
+      proactiveStatus = `Analyse indisponible : ${e}`;
+      statusMessage = proactiveStatus;
+    } finally {
+      proactiveLoading = false;
+      scheduleNoteScan(12000);
+    }
+  }
+
+  async function handleEditingIdle(span: ParagraphSpan) {
+    if (!selectedPath || preview) return;
+
+    if (autoTypoFixEnabled && bodyHasTypoLines(content)) {
+      await runBatchAutoTypoFix();
+      return;
+    }
+
+    if (!proactiveEnabled) return;
+    scheduleNoteScan(8000);
+    if (!likelyNeedsCorrection(span.text)) {
+      await processProactiveSpan(span);
+    }
+  }
+
+  function handleProactiveToggle(enabled: boolean) {
+    proactiveEnabled = enabled;
+    saveProactiveEnabled(enabled);
+  }
+
   function handleNoteContextChange(value: string) {
     const next = setNoteContext(content, value);
     handleContentChange(next);
-    if (!selectedPath) return;
-    if (contextSaveTimer) clearTimeout(contextSaveTimer);
-    contextSaveTimer = setTimeout(() => {
-      persistNote(selectedPath!, next);
-    }, 800);
   }
 
   async function insertImageMarkdown(relative: string) {
@@ -467,8 +975,10 @@
   onMount(async () => {
     theme = loadTheme();
     applyTheme(theme);
+    proactiveEnabled = loadProactiveEnabled();
+    autoTypoFixEnabled = loadAutoTypoFixEnabled();
     await refreshVault();
-    await refreshOllama();
+    await ensureOllamaRunning(true);
     await refreshVoice();
 
     unlisteners.push(
@@ -479,8 +989,13 @@
         await refreshVoice();
       }),
       await listen("voice-worker-stopped", async () => {
+        try {
+          await invoke("voice_restart");
+          statusMessage = "Worker vocal relancé automatiquement.";
+        } catch {
+          statusMessage = "Worker vocal arrêté. Réglages → Voix pour relancer.";
+        }
         await refreshVoice();
-        statusMessage = "Worker vocal arrêté. Appuyez sur la touche dictée ou Réglages → Voix.";
       }),
     );
 
@@ -498,29 +1013,19 @@
 <div class="flex h-screen flex-col overflow-hidden">
   <header class="flex items-center justify-between border-b border-border bg-surface px-4 py-2">
     <div class="flex items-center gap-3 text-xs text-text-muted">
-      <span
-        class="pixel-icon cursor-context-menu rounded-lg bg-accent-mint/30 px-2 py-1"
-        title="Commandes vocales (clic droit)"
-        oncontextmenu={openVoiceMenu}
-        role="button"
-        tabindex="0"
-      >
-        ◈ Local
-      </span>
       <button
         type="button"
         class="rounded-lg px-2 py-0.5 transition hover:bg-surface-muted {voiceStatus.recording ? 'bg-danger/20' : ''}"
         onclick={handleVoiceToggle}
-        oncontextmenu={openVoiceMenu}
-        title="Dictée vocale ({voiceStatus.hotkey}) · clic droit : commandes"
+        title="Dictée ({voiceStatus.hotkey}) · commandes dans la bulle en bas à gauche"
       >
         🎙 {voiceStatus.recording ? "REC…" : voiceStatus.hotkey}
       </button>
       <button
         type="button"
-        class="rounded-lg px-1 transition hover:bg-surface-muted"
-        onclick={openSettings}
-        title="Réglages (Ctrl+,)"
+        class="rounded-lg px-1 transition hover:bg-surface-muted {ollamaStatus.available ? '' : 'text-accent-blue'}"
+        onclick={handleOllamaHeaderClick}
+        title={ollamaStatus.available ? "Ollama connecté — réglages" : "Cliquer pour démarrer Ollama"}
       >
         Ollama : {ollamaStatus.available ? "connecté" : "hors ligne"}
         {#if ollamaStatus.available}
@@ -572,40 +1077,34 @@
     />
 
     {#if selectedPath}
-      <div class="flex min-h-0 min-w-0 flex-1">
-        <MarkdownEditor
-          {content}
-          {title}
-          notePath={selectedPath}
-          {vaultPath}
-          {dirty}
-          {saving}
-          {preview}
-          ollamaAvailable={ollamaStatus.available}
-          {aiLoading}
-          companionOpen={companionOpen}
-          onChange={handleContentChange}
-          onSave={() => selectedPath && persistNote(selectedPath, content)}
-          onTogglePreview={() => (preview = !preview)}
-          onAiAction={handleAiAction}
-          onInsertImage={handleInsertImage}
-          onImportImages={importImagesFromPaths}
-          onPasteImageBytes={importPastedImage}
-          onExport={handleExport}
-          onToggleCompanion={() => (companionOpen = !companionOpen)}
-        />
-        <AiCompanionPanel
-          open={companionOpen}
-          {noteContext}
-          suggestions={aiSuggestions}
-          {aiLoading}
-          onContextChange={handleNoteContextChange}
-          onApply={applySuggestion}
-          onDismiss={dismissSuggestion}
-          onDismissAll={() => (aiSuggestions = [])}
-          onClose={() => (companionOpen = false)}
-        />
-      </div>
+      <MarkdownEditor
+        {content}
+        {title}
+        notePath={selectedPath}
+        {vaultPath}
+        {dirty}
+        {saving}
+        {preview}
+        ollamaAvailable={ollamaStatus.available}
+        {aiLoading}
+        companionOpen={companionOpen}
+        onChange={handleContentChange}
+        onSave={() => selectedPath && persistNote(selectedPath, content)}
+        onTogglePreview={() => (preview = !preview)}
+        onAiAction={handleAiAction}
+        onInsertImage={handleInsertImage}
+        onImportImages={importImagesFromPaths}
+        onPasteImageBytes={importPastedImage}
+        onExport={handleExport}
+        onToggleCompanion={toggleCompanion}
+        onSelectionChange={(sel) => (editorSelection = sel)}
+        onEditingIdle={handleEditingIdle}
+        onAutoTypoFix={handleAutoTypoFix}
+        {autoTypoFixEnabled}
+        highlightRange={editorHighlight}
+        {editorCursor}
+        onCursorRestored={() => (editorCursor = null)}
+      />
     {:else}
       <section class="flex flex-1 flex-col items-center justify-center gap-4 bg-bg text-center">
         <span class="pixel-icon text-4xl">📓</span>
@@ -661,10 +1160,25 @@
   hotkey={voiceStatus.hotkey}
 />
 
-<VoiceCommandsWidget
-  hotkey={voiceStatus.hotkey}
-  open={voiceMenuOpen}
-  x={voiceMenuPos.x}
-  y={voiceMenuPos.y}
-  onClose={closeVoiceMenu}
+<AiCompanionPanel
+  open={companionOpen && !!selectedPath}
+  {voiceStatus}
+  onToggleRecord={handleVoiceToggle}
+  {noteContext}
+  notePath={selectedPath}
+  suggestions={aiSuggestions}
+  {aiLoading}
+  {proactiveLoading}
+  {proactiveEnabled}
+  {autoTypoFixEnabled}
+  {proactiveStatus}
+  customTargetLabel={customPromptTargetLabel}
+  onContextChange={handleNoteContextChange}
+  onProactiveToggle={handleProactiveToggle}
+  onAutoTypoToggle={handleAutoTypoToggle}
+  onCustomPrompt={handleCustomPrompt}
+  onApply={applySuggestion}
+  onDismiss={dismissSuggestion}
+  onDismissAll={() => (aiSuggestions = [])}
+  onClose={() => (companionOpen = false)}
 />
