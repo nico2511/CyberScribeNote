@@ -1,0 +1,84 @@
+import type { AiAction } from "$lib/types";
+
+export interface VoiceCommandInfo {
+  phrase: string;
+  description: string;
+  category: "dictée" | "ia" | "navigation";
+  requiresNote?: boolean;
+  requiresOllama?: boolean;
+}
+
+/** Catalogue des commandes vocales reconnues (préfixe « Scribe, … »). */
+export const VOICE_COMMANDS: VoiceCommandInfo[] = [
+  {
+    phrase: "Scribe, résume",
+    description: "Résume la note active via Ollama",
+    category: "ia",
+    requiresNote: true,
+    requiresOllama: true,
+  },
+  {
+    phrase: "Scribe, reformule",
+    description: "Reformule le texte (note entière)",
+    category: "ia",
+    requiresNote: true,
+    requiresOllama: true,
+  },
+  {
+    phrase: "Scribe, corrige",
+    description: "Corrige orthographe et grammaire",
+    category: "ia",
+    requiresNote: true,
+    requiresOllama: true,
+  },
+  {
+    phrase: "Scribe, traduis en anglais",
+    description: "Traduit la note en anglais",
+    category: "ia",
+    requiresNote: true,
+    requiresOllama: true,
+  },
+  {
+    phrase: "Scribe, cherche …",
+    description: "Ouvre la recherche avec vos mots-clés",
+    category: "navigation",
+  },
+  {
+    phrase: "Scribe, ouvre …",
+    description: "Insère un lien interne [[Note]]",
+    category: "navigation",
+    requiresNote: true,
+  },
+  {
+    phrase: "(dictée libre)",
+    description: "Transcrit votre voix et l'insère dans la note",
+    category: "dictée",
+    requiresNote: true,
+  },
+];
+
+export const VOICE_CATEGORY_LABELS: Record<VoiceCommandInfo["category"], string> = {
+  dictée: "Dictée",
+  ia: "Intelligence artificielle",
+  navigation: "Navigation",
+};
+
+export interface TextSelection {
+  start: number;
+  end: number;
+  text: string;
+}
+
+export interface AiActionRequest {
+  action: AiAction;
+  selection?: TextSelection;
+}
+
+export function replaceTextRange(
+  content: string,
+  start: number,
+  end: number,
+  replacement: string,
+): string {
+  return content.slice(0, start) + replacement + content.slice(end);
+}

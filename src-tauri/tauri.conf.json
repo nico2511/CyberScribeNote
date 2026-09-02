@@ -1,0 +1,44 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "CyberScribeNote",
+  "version": "0.1.0",
+  "identifier": "com.nico2511.cyberscribenote",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "CyberScribeNote",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 600,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost blob: data:",
+      "devCsp": "default-src 'self' 'unsafe-inline' 'unsafe-eval' ipc: http://ipc.localhost http://localhost:* ws://localhost:*; img-src 'self' asset: http://asset.localhost blob: data: http://localhost:*",
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$DOCUMENT/CyberScribeNote/**"]
+      }
+    }
+  },
+  "bundle": {
+    "active": false,
+    "targets": [],
+    "resources": ["../voice/*"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

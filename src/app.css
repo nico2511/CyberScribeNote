@@ -1,0 +1,131 @@
+@import "tailwindcss";
+
+/* ── Light Pastel (défaut) ── */
+:root,
+[data-theme="light"] {
+  --bg: #f8f5f2;
+  --surface: #ffffff;
+  --surface-muted: #fdf9f6;
+  --text: #3a3a3a;
+  --text-muted: #7a7a7a;
+  --accent-lavender: #c9b1d0;
+  --accent-mint: #b8d4c8;
+  --accent-blue: #a8c5d4;
+  --border: #e8e2dc;
+  --shadow: 0 2px 12px rgb(58 58 58 / 6%);
+  --danger: #d48484;
+}
+
+/* ── Dark Pastel ── */
+[data-theme="dark"] {
+  --bg: #1e1c24;
+  --surface: #2c2a35;
+  --surface-muted: #25232b;
+  --text: #e8e4df;
+  --text-muted: #a8a4b0;
+  --accent-lavender: #9a85a8;
+  --accent-mint: #7a9e8e;
+  --accent-blue: #7a9eb0;
+  --border: #3a3845;
+  --shadow: 0 2px 16px rgb(0 0 0 / 25%);
+  --danger: #c07070;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-muted: var(--surface-muted);
+  --color-text: var(--text);
+  --color-text-muted: var(--text-muted);
+  --color-accent-lavender: var(--accent-lavender);
+  --color-accent-mint: var(--accent-mint);
+  --color-accent-blue: var(--accent-blue);
+  --color-border: var(--border);
+  --color-danger: var(--danger);
+  --radius-xl: 1rem;
+  --radius-2xl: 1.25rem;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Pixel-art accent on icons */
+.pixel-icon {
+  image-rendering: pixelated;
+  font-family: "Courier New", monospace;
+  letter-spacing: -0.05em;
+}
+
+/* Markdown preview */
+.prose-note h1 {
+  font-size: 1.75rem;
+  font-weight: 700;
+  margin: 1rem 0 0.5rem;
+}
+
+.prose-note h2 {
+  font-size: 1.35rem;
+  font-weight: 600;
+  margin: 1rem 0 0.4rem;
+  color: var(--text);
+}
+
+.prose-note h3 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin: 0.75rem 0 0.3rem;
+}
+
+.prose-note p {
+  margin: 0.5rem 0;
+  line-height: 1.65;
+}
+
+.prose-note ul,
+.prose-note ol {
+  padding-left: 1.5rem;
+  margin: 0.5rem 0;
+}
+
+.prose-note code {
+  background: var(--surface-muted);
+  padding: 0.1rem 0.35rem;
+  border-radius: 0.25rem;
+  font-size: 0.9em;
+}
+
+.prose-note pre {
+  background: var(--surface-muted);
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-xl);
+  overflow-x: auto;
+}
+
+.prose-note blockquote {
+  border-left: 3px solid var(--accent-lavender);
+  padding-left: 1rem;
+  color: var(--text-muted);
+  margin: 0.75rem 0;
+}
+
+.prose-note a {
+  color: var(--accent-blue);
+}
+
+.prose-note img {
+  max-width: 100%;
+  border-radius: var(--radius-xl);
+}
+
+/* Scrollbars doux */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--accent-lavender) transparent;
+}
