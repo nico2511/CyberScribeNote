@@ -45,7 +45,7 @@ impl Default for VoiceConfig {
             whisper_device: "auto".to_string(),
             whisper_compute_type: "int8".to_string(),
             whisper_profile: "fast".to_string(),
-            max_record_seconds: 25,
+            max_record_seconds: 90,
         }
     }
 }
@@ -92,6 +92,7 @@ pub struct VoiceState {
     child: Option<Child>,
     stdin: Option<ChildStdin>,
     status: VoiceStatus,
+    generation: u64,
 }
 
 impl Default for VoiceState {
@@ -109,6 +110,7 @@ impl Default for VoiceState {
                 hotkey: VoiceConfig::default().voice_hotkey.clone(),
                 error: None,
             },
+            generation: 0,
         }
     }
 }
@@ -249,12 +251,19 @@ impl VoiceState {
         }
     }
 
+    fn bump_generation(&mut self) -> u64 {
+        self.generation = self.generation.wrapping_add(1);
+        self.generation
+    }
+
     fn mark_worker_stopped(&mut self) {
         self.stdin = None;
         self.child = None;
         self.status.running = false;
         self.status.recording = false;
         self.status.transcribing = false;
+        self.status.model_loading = false;
+        self.status.model_loaded = false;
     }
 
     fn send_cmd(&mut self, payload: serde_json::Value) -> Result<(), String> {
@@ -263,23 +272,29 @@ impl VoiceState {
             .as_mut()
             .ok_or("Worker vocal non démarré. Ouvrez Réglages → Voix.")?;
         let line = payload.to_string() + "\n";
-        match stdin.write_all(line.as_bytes()) {
-            Ok(()) => {
-                let _ = stdin.flush();
-                Ok(())
-            }
+        match stdin.write_all(line.as_bytes()).and_then(|_| stdin.flush()) {
+            Ok(()) => Ok(()),
             Err(e) => {
-                self.mark_worker_stopped();
-                Err(format!(
-                    "Worker vocal déconnecté (relance automatique…) : {e}"
-                ))
+                // Ne drop pas tout de suite le child : vérifier s'il est vraiment mort.
+                let dead = self
+                    .child
+                    .as_mut()
+                    .and_then(|c| c.try_wait().ok().flatten())
+                    .is_some()
+                    || self.child.is_none();
+                if dead {
+                    self.mark_worker_stopped();
+                }
+                Err(format!("Worker vocal déconnecté : {e}"))
             }
         }
     }
 
     pub fn stop_worker(&mut self) {
-        if self.stdin.is_some() {
-            let _ = self.send_cmd(serde_json::json!({"cmd": "shutdown"}));
+        self.bump_generation();
+        if let Some(stdin) = self.stdin.as_mut() {
+            let _ = stdin.write_all(b"{\"cmd\":\"shutdown\"}\n");
+            let _ = stdin.flush();
         }
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
@@ -311,9 +326,12 @@ impl VoiceState {
         let stdout = child.stdout.take().ok_or("stdout worker indisponible")?;
         let stderr = child.stderr.take();
 
+        let generation = self.generation;
         self.stdin = Some(stdin);
         self.child = Some(child);
         self.status.running = true;
+        self.status.model_loaded = false;
+        self.status.model_loading = false;
         self.status.hotkey = voice.voice_hotkey.clone();
         self.status.error = None;
 
@@ -325,15 +343,26 @@ impl VoiceState {
                     handle_worker_event(&app_handle, json);
                 }
             }
-            if let Some(state) = app_handle.try_state::<Arc<Mutex<VoiceState>>>() {
+            let unexpected = if let Some(state) = app_handle.try_state::<Arc<Mutex<VoiceState>>>() {
                 if let Ok(mut guard) = state.lock() {
-                    guard.mark_worker_stopped();
-                    guard.status.error = Some(
-                        "Worker vocal arrêté. Relance en cours…".into(),
-                    );
+                    if guard.generation != generation {
+                        false
+                    } else {
+                        guard.mark_worker_stopped();
+                        guard.status.error = Some(
+                            "Worker vocal arrêté inopinément.".into(),
+                        );
+                        true
+                    }
+                } else {
+                    false
                 }
+            } else {
+                false
+            };
+            if unexpected {
+                let _ = app_handle.emit("voice-worker-stopped", ());
             }
-            let _ = app_handle.emit("voice-worker-stopped", ());
         });
 
         if let Some(stderr) = stderr {
@@ -341,20 +370,17 @@ impl VoiceState {
             std::thread::spawn(move || {
                 let reader = BufReader::new(stderr);
                 for line in reader.lines().map_while(Result::ok) {
-                    if !line.trim().is_empty() {
-                        let _ = app_handle.emit(
-                            "voice-event",
-                            serde_json::json!({
-                                "type": "stderr",
-                                "message": line
-                            }),
-                        );
-                        if let Some(state) = app_handle.try_state::<Arc<Mutex<VoiceState>>>() {
-                            if let Ok(mut guard) = state.lock() {
-                                guard.status.error = Some(line);
-                            }
-                        }
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        continue;
                     }
+                    let _ = app_handle.emit(
+                        "voice-event",
+                        serde_json::json!({
+                            "type": "stderr",
+                            "message": trimmed
+                        }),
+                    );
                 }
             });
         }
@@ -376,16 +402,36 @@ impl VoiceState {
         }))
     }
 
-    pub fn ensure_worker(&mut self, app: &AppHandle) -> Result<(), String> {
+    pub fn ensure_worker(&mut self, app: &AppHandle) -> Result<bool, String> {
         if self.is_worker_alive() {
-            return Ok(());
+            return Ok(false);
         }
         let voice = voice_config_from_app();
-        self.start_worker(app, &voice)
+        self.start_worker(app, &voice)?;
+        Ok(true)
     }
 
     pub fn toggle(&mut self, app: &AppHandle) -> Result<(), String> {
-        self.ensure_worker(app)?;
+        let restarted = self.ensure_worker(app)?;
+        if restarted {
+            return Err(
+                "Worker vocal redémarré — attendez le chargement du modèle Whisper, puis réessayez."
+                    .into(),
+            );
+        }
+        if self.status.model_loading {
+            return Err("Chargement du modèle Whisper en cours — patientez.".into());
+        }
+        // On autorise l'enregistrement même si le modèle charge encore un peu :
+        // la transcription attendra. Mais pas si le modèle a clairement échoué.
+        if !self.status.model_loaded && self.status.error.is_some() {
+            return Err(
+                self.status
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "Modèle Whisper non prêt.".into()),
+            );
+        }
         self.send_cmd(serde_json::json!({"cmd": "toggle"}))
     }
 }
@@ -469,10 +515,27 @@ fn handle_worker_event(app: &AppHandle, json: serde_json::Value) {
                         json.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
                 }
                 "error" => {
-                    guard.status.error = json
+                    // Les messages "transcription en cours" ne sont pas fatals
+                    let mut msg = json
                         .get("message")
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string());
+                    if let Some(ref m) = msg {
+                        if m.contains("Transcription encore en cours")
+                            || m.contains("Chargement")
+                        {
+                            // info seulement — ne bloque pas les dictées suivantes
+                            msg = None;
+                        }
+                    }
+                    guard.status.error = msg;
+                }
+                "transcript" => {
+                    // Une dictée réussie efface l'erreur résiduelle (timeout, etc.)
+                    let text = json.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                    if !text.trim().is_empty() {
+                        guard.status.error = None;
+                    }
                 }
                 _ => {}
             }
@@ -622,22 +685,20 @@ pub fn voice_install_deps(app: AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn voice_restart(app: AppHandle) -> Result<(), String> {
-    restart_voice(&app)
+pub fn voice_restart(app: AppHandle, force: Option<bool>) -> Result<(), String> {
+    restart_voice_internal(&app, force.unwrap_or(false))
 }
 
-pub fn setup_voice(app: &AppHandle) -> Result<(), String> {
-    restart_voice(app)
-}
-
-pub fn restart_voice(app: &AppHandle) -> Result<(), String> {
+fn restart_voice_internal(app: &AppHandle, force: bool) -> Result<(), String> {
     {
         let mut guard = VOICE_RESTART_GUARD
             .lock()
             .map_err(|e| e.to_string())?;
-        if let Some(last) = *guard {
-            if last.elapsed() < Duration::from_secs(2) {
-                return Ok(());
+        if !force {
+            if let Some(last) = *guard {
+                if last.elapsed() < Duration::from_secs(8) {
+                    return Ok(());
+                }
             }
         }
         *guard = Some(Instant::now());
@@ -651,4 +712,8 @@ pub fn restart_voice(app: &AppHandle) -> Result<(), String> {
         guard.start_worker(app, &voice)?;
     }
     register_voice_hotkey(app, &voice.voice_hotkey)
+}
+
+pub fn setup_voice(app: &AppHandle) -> Result<(), String> {
+    restart_voice_internal(app, true)
 }

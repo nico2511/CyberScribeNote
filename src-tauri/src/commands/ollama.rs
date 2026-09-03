@@ -1,4 +1,4 @@
-use crate::commands::config::load_config;
+use crate::commands::config::{host_url, load_config};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::process::Command;
@@ -6,12 +6,6 @@ use tauri::{AppHandle, Emitter};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
-
-const DEFAULT_HOST: &str = "http://127.0.0.1:11434";
-
-fn host_url() -> String {
-    load_config().ollama_host.trim_end_matches('/').to_string()
-}
 
 #[derive(Debug, Serialize)]
 struct OllamaRequest {
@@ -249,7 +243,7 @@ pub fn ollama_recommended_models() -> Vec<RecommendedModel> {
             id: "nomic-embed-text".into(),
             label: "Nomic Embed".into(),
             size: "~274 Mo".into(),
-            description: "Embeddings pour recherche sémantique (Phase 2)".into(),
+            description: "Embeddings pour recherche sémantique (RAG)".into(),
         },
     ]
 }
@@ -491,8 +485,7 @@ fn find_ollama_app() -> Option<std::path::PathBuf> {
         })
 }
 
-#[tauri::command]
-pub async fn ollama_generate(prompt: String, model: Option<String>) -> Result<String, String> {
+pub(crate) async fn ollama_generate(prompt: String, model: Option<String>) -> Result<String, String> {
     let config = load_config();
     let host = config.ollama_host.trim_end_matches('/').to_string();
     let client = reqwest::Client::builder()
@@ -529,6 +522,7 @@ pub async fn ollama_custom_prompt(
     content: String,
     model: Option<String>,
     note_context: Option<String>,
+    rag_context: Option<String>,
 ) -> Result<String, String> {
     let instruction = instruction.trim();
     if instruction.is_empty() {
@@ -536,8 +530,9 @@ pub async fn ollama_custom_prompt(
     }
 
     let context_block = format_note_context(note_context.as_deref());
+    let rag_block = format_rag_block(rag_context.as_deref());
     let prompt = format!(
-        "Tu es un assistant de prise de notes.{context_block}\n\n\
+        "Tu es un assistant de prise de notes.{context_block}{rag_block}\n\n\
          Consigne de l'utilisateur :\n{instruction}\n\n\
          Texte à traiter :\n---\n{content}\n---\n\n\
          Réponds uniquement avec le résultat demandé, sans introduction ni commentaire."
@@ -553,12 +548,14 @@ pub async fn ollama_summarize_note(
     content: String,
     model: Option<String>,
     note_context: Option<String>,
+    rag_context: Option<String>,
 ) -> Result<String, String> {
     let context_block = format_note_context(note_context.as_deref());
+    let rag_block = format_rag_block(rag_context.as_deref());
     let prompt = format!(
-        "Tu es un assistant de prise de notes.{context_block} \
+        "Tu es un assistant de prise de notes.{context_block}{rag_block} \
          Résume le passage suivant en français, en 3 à 5 phrases concises. \
-         Ne répète pas le titre.\n\n---\n{content}\n---"
+         Ne répète pas le titre. N'invente pas à partir du RAG si le passage suffit.\n\n---\n{content}\n---"
     );
     ollama_generate(prompt, model).await
 }
@@ -569,11 +566,14 @@ pub async fn ollama_transform_note(
     content: String,
     model: Option<String>,
     note_context: Option<String>,
+    target_language: Option<String>,
+    rag_context: Option<String>,
 ) -> Result<String, String> {
     let context_block = format_note_context(note_context.as_deref());
+    let rag_block = format_rag_block(rag_context.as_deref());
     let prompt = match action.as_str() {
         "reformulate" => format!(
-            "Reformule ce texte en français, plus clair et fluide, sans changer le sens.{context_block} \
+            "Reformule ce texte en français, plus clair et fluide, sans changer le sens.{context_block}{rag_block} \
              Réponds uniquement avec le texte reformulé.\n\n{content}"
         ),
         "correct" => format!(
@@ -589,13 +589,32 @@ pub async fn ollama_transform_note(
              - Corrige TOUTES les fautes du passage, pas seulement une partie\n\
              - Même sens exact, structure proche\n\n{content}"
         ),
-        "translate_en" => format!(
-            "Traduis ce texte en anglais.{context_block} \
-             Réponds uniquement avec la traduction.\n\n{content}"
-        ),
+        "translate" | "translate_en" | "translate_de" | "translate_es" | "translate_it"
+        | "translate_pt" | "translate_nl" => {
+            let lang = target_language
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| match action.as_str() {
+                    "translate_de" => "allemand".into(),
+                    "translate_es" => "espagnol".into(),
+                    "translate_it" => "italien".into(),
+                    "translate_pt" => "portugais".into(),
+                    "translate_nl" => "néerlandais".into(),
+                    _ => "anglais".into(),
+                });
+            format!(
+                "Traduis ce texte en {lang}.{context_block} \
+                 Réponds uniquement avec la traduction complète, sans commentaire ni balises.\n\n{content}"
+            )
+        }
         _ => return Err(format!("Action IA inconnue : {action}")),
     };
-    ollama_generate(prompt, model).await.map(|raw| sanitize_ai_response(&raw, &action, &content))
+    let _ = rag_block; // translate ignore le RAG volontairement
+    ollama_generate(prompt, model)
+        .await
+        .map(|raw| sanitize_ai_response(&raw, &action, &content))
 }
 
 fn sanitize_ai_response(raw: &str, action: &str, original: &str) -> String {
@@ -682,16 +701,17 @@ pub async fn ollama_proactive_suggest(
         .unwrap_or_default();
 
     let prompt = format!(
-        "Tu es un compagnon d'écriture discret dans une app de notes.{context_block}\
-         Analyse UNIQUEMENT le passage ci-dessous — n'utilise PAS d'autres parties de la note.{excerpt_block}\n\n\
+        "Tu es un correcteur orthographique discret dans une app de notes.{context_block}\
+         Analyse UNIQUEMENT le passage ci-dessous.{excerpt_block}\n\n\
          Passage :\n---\n{paragraph}\n---\n\n\
-         Si le passage contient des fautes d'orthographe ou de grammaire :\n\
+         Propose UNIQUEMENT une correction d'orthographe / grammaire si nécessaire.\n\
+         INTERDIT : reformuler, traduire, paraphraser, changer le style ou le sens,\n\
+         ajouter des idées, réécrire dans une autre langue.\n\n\
+         S'il y a des fautes :\n\
          {{\"suggest\":true,\"label\":\"Correction\",\"proposed\":\"...\",\"reason\":\"...\"}}\n\
-         - \"proposed\" = la MÊME phrase corrigée (mêmes mots, même sens, longueur similaire)\n\
-         - NE PAS reformuler, NE PAS ajouter de contenu du contexte de la note\n\n\
-         Si le passage est correct mais une reformulation stylistique aiderait (sans fautes) :\n\
-         {{\"suggest\":true,\"label\":\"Reformulation\",\"proposed\":\"...\",\"reason\":\"...\"}}\n\n\
-         Sinon : {{\"suggest\":false}}\n\
+         - \"proposed\" = la MÊME phrase, mêmes mots autant que possible, juste corrigée\n\
+         - longueur très proche de l'original\n\n\
+         Sinon (texte déjà correct, autre langue, style volontaire) : {{\"suggest\":false}}\n\
          Pas de markdown, pas de texte hors JSON."
     );
 
@@ -699,35 +719,78 @@ pub async fn ollama_proactive_suggest(
     let mut parsed = parse_proactive_response(&raw);
     if parsed.suggest {
         if let Some(raw_proposed) = parsed.proposed.take() {
-            let action = if parsed
+            let label_l = parsed
                 .label
                 .as_deref()
                 .unwrap_or("")
-                .to_lowercase()
-                .contains("reform")
-            {
-                "reformulate"
-            } else {
-                "correct"
-            };
-            let proposed = sanitize_ai_response(&raw_proposed, action, &paragraph);
-            let reject = proposed.trim().is_empty()
-                || proposed.trim() == paragraph.trim()
-                || (action == "correct"
-                    && paragraph.split_whitespace().count() > 0
-                    && proposed.split_whitespace().count() > paragraph.split_whitespace().count() + 2);
-
-            if reject {
+                .to_lowercase();
+            // Plus de reformulation proactive : trop de dérive de sens
+            if label_l.contains("reform") {
                 parsed.suggest = false;
+                parsed.proposed = None;
                 parsed.reason = None;
+                parsed.label = None;
             } else {
-                parsed.proposed = Some(proposed);
+                let action = "correct";
+                let proposed = sanitize_ai_response(&raw_proposed, action, &paragraph);
+                let reject = proposed.trim().is_empty()
+                    || proposed.trim() == paragraph.trim()
+                    || (paragraph.split_whitespace().count() > 0
+                        && proposed.split_whitespace().count()
+                            > paragraph.split_whitespace().count() + 2)
+                    || !is_faithful_enough(&paragraph, &proposed);
+
+                if reject {
+                    parsed.suggest = false;
+                    parsed.reason = None;
+                } else {
+                    parsed.proposed = Some(proposed);
+                    parsed.label = Some("Correction".into());
+                }
             }
         } else {
             parsed.suggest = false;
         }
     }
     Ok(parsed)
+}
+
+/** Heuristique anti-dérive : une « correction » doit ressembler à l'original. */
+fn is_faithful_enough(original: &str, proposed: &str) -> bool {
+    let o = original.trim();
+    let p = proposed.trim();
+    if o.is_empty() || p.is_empty() {
+        return false;
+    }
+    let o_words: Vec<&str> = o.split_whitespace().collect();
+    let p_words: Vec<&str> = p.split_whitespace().collect();
+    if p_words.len() > o_words.len() + 2 {
+        return false;
+    }
+    if (p.len() as f32) > (o.len() as f32) * 1.4 + 8.0 {
+        return false;
+    }
+    let p_lower: Vec<String> = p_words.iter().map(|w| w.to_lowercase()).collect();
+    let mut matched = 0usize;
+    for w in &o_words {
+        let nw = w.to_lowercase();
+        if p_lower.iter().any(|pw| pw == &nw) {
+            matched += 1;
+            continue;
+        }
+        let prefix: String = nw.chars().take(2).collect();
+        if prefix.len() >= 2
+            && p_lower.iter().any(|pw| {
+                pw.starts_with(&prefix) && (pw.len() as i32 - nw.len() as i32).abs() <= 3
+            })
+        {
+            matched += 1;
+        }
+    }
+    if o_words.is_empty() {
+        return false;
+    }
+    (matched as f32) / (o_words.len() as f32) >= 0.45
 }
 
 fn parse_proactive_response(raw: &str) -> ProactiveSuggestion {
@@ -786,7 +849,10 @@ fn format_note_context(note_context: Option<&str>) -> String {
     )
 }
 
-#[allow(dead_code)]
-pub fn default_host() -> &'static str {
-    DEFAULT_HOST
+fn format_rag_block(rag_context: Option<&str>) -> String {
+    match rag_context.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(rag) => format!("\n\n{rag}\n"),
+        None => String::new(),
+    }
 }
+

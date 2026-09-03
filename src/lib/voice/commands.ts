@@ -1,4 +1,5 @@
 import type { AiAction } from "$lib/types";
+import type { TranslateLang } from "$lib/ai/languages";
 
 export interface VoiceCommandInfo {
   phrase: string;
@@ -12,7 +13,7 @@ export interface VoiceCommandInfo {
 export const VOICE_COMMANDS: VoiceCommandInfo[] = [
   {
     phrase: "Scribe, résume",
-    description: "Résume la note active via Ollama",
+    description: "Ajoute un résumé en fin de note via Ollama",
     category: "ia",
     requiresNote: true,
     requiresOllama: true,
@@ -32,26 +33,25 @@ export const VOICE_COMMANDS: VoiceCommandInfo[] = [
     requiresOllama: true,
   },
   {
-    phrase: "Scribe, traduis en anglais",
-    description: "Traduit la note en anglais",
+    phrase: "Scribe, traduis en …",
+    description: "Traduit (anglais, allemand, espagnol, italien, portugais, néerlandais)",
     category: "ia",
     requiresNote: true,
     requiresOllama: true,
   },
   {
     phrase: "Scribe, cherche …",
-    description: "Ouvre la recherche avec vos mots-clés",
+    description: "Ouvre la recherche rapide (Ctrl+T) avec vos mots-clés",
     category: "navigation",
   },
   {
     phrase: "Scribe, ouvre …",
-    description: "Insère un lien interne [[Note]]",
+    description: "Ouvre la note correspondante dans le vault (PTT)",
     category: "navigation",
-    requiresNote: true,
   },
   {
     phrase: "(dictée libre)",
-    description: "Transcrit votre voix et l'insère dans la note",
+    description: "Pendant le PTT : transcrit et insère dans la note active",
     category: "dictée",
     requiresNote: true,
   },
@@ -72,6 +72,7 @@ export interface TextSelection {
 export interface AiActionRequest {
   action: AiAction;
   selection?: TextSelection;
+  translateTo?: TranslateLang;
 }
 
 export function replaceTextRange(

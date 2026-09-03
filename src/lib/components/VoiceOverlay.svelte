@@ -12,7 +12,7 @@
     if (recording) return "Enregistrement…";
     if (transcribing) return "Transcription…";
     if (modelLoading) return "Chargement Whisper…";
-    return `Prêt · ${hotkey}`;
+    return `PTT prêt · ${hotkey}`;
   });
 </script>
 
@@ -28,7 +28,7 @@
       ></span>
       <span class="text-sm font-medium">{label}</span>
       {#if recording}
-        <span class="text-xs text-text-muted">Appuyez sur {hotkey} pour arrêter</span>
+        <span class="text-xs text-text-muted">Rappuyez sur {hotkey} pour transcrire (PTT)</span>
       {/if}
     </div>
   </div>

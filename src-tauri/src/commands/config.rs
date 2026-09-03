@@ -42,7 +42,7 @@ fn default_whisper_profile() -> String {
     "fast".into()
 }
 fn default_max_record_seconds() -> u32 {
-    25
+    90
 }
 
 impl Default for AppConfig {
@@ -69,6 +69,11 @@ fn config_dir() -> Result<PathBuf, String> {
 
 pub fn config_path() -> Result<PathBuf, String> {
     Ok(config_dir()?.join("config.json"))
+}
+
+/// Returns the Ollama host URL (without trailing slash).
+pub fn host_url() -> String {
+    load_config().ollama_host.trim_end_matches('/').to_string()
 }
 
 pub fn load_config() -> AppConfig {

@@ -36,11 +36,3 @@ export function isFaithfulCorrection(original: string, proposed: string): boolea
   return matched / oWords.length >= 0.45;
 }
 
-export function rejectUnfaithfulProposal(
-  original: string,
-  proposed: string,
-  action: "correct" | "reformulate" | "other" = "correct",
-): string | null {
-  if (action !== "correct") return proposed;
-  return isFaithfulCorrection(original, proposed) ? proposed : null;
-}

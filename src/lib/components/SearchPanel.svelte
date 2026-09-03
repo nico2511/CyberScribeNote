@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { SearchResult } from "$lib/types";
+  import PixelIcon from "./PixelIcon.svelte";
 
   interface Props {
     open: boolean;
@@ -48,7 +49,7 @@
       tabindex="-1"
     >
       <div class="flex items-center gap-3 border-b border-border px-4 py-3">
-        <span class="pixel-icon text-accent-blue">⌕</span>
+        <PixelIcon name="search" size={16} class="text-accent-blue" />
         <input
           bind:this={inputEl}
           type="search"

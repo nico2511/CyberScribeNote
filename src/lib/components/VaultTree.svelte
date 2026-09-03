@@ -1,5 +1,6 @@
 <script lang="ts">
   import Self from "./VaultTree.svelte";
+  import PixelIcon from "./PixelIcon.svelte";
   import type { VaultEntry } from "$lib/types";
   import {
     canMoveVaultItem,
@@ -108,8 +109,8 @@
             ondragstart={(e) => handleDragStart(e, entry)}
             ondragend={handleDragEnd}
           >
-            <span class="pixel-icon text-xs text-accent-mint">{isExpanded(entry.path) ? "▼" : "▶"}</span>
-            <span class="pixel-icon text-accent-lavender">📁</span>
+            <PixelIcon name="chevron" size={16} class="text-accent-mint {isExpanded(entry.path) ? 'rotate-90' : ''}" />
+            <PixelIcon name="folder" size={16} class="text-accent-lavender" />
             <span class="truncate">{entry.name}</span>
           </button>
           <div class="hidden gap-0.5 group-hover:flex">
@@ -155,7 +156,7 @@
             ondragstart={(e) => handleDragStart(e, entry)}
             ondragend={handleDragEnd}
           >
-            <span class="pixel-icon text-accent-blue">📄</span>
+            <PixelIcon name="note" size={16} class="text-accent-blue" />
             <span class="truncate">{entry.name.replace(/\.md$/, "")}</span>
           </button>
           <button

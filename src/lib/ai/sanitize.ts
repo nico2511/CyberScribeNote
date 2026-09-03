@@ -37,22 +37,17 @@ export function sanitizeAiOutput(raw: string, action?: string): string {
   text = text.replace(/^["'«»]+|["'«»]+$/g, "").trim();
 
   // Si le modèle a mis la vraie réponse entre guillemets sur une ligne suivante
-  if (action === "correct" || action === "reformulate" || action === "translate_en") {
+  if (action === "correct" || action === "reformulate" || action === "translate") {
     const quoted = text.match(/["«]([^"»]{12,})["»]/);
     if (quoted && quoted[1].trim().length > text.length * 0.4) {
       text = quoted[1].trim();
     }
   }
 
-  if (action === "correct" || action === "reformulate" || action === "translate_en") {
+  if (action === "correct" || action === "reformulate" || action === "translate") {
     text = text.replace(/^(voici[^:\n]*:\s*)/i, "").trim();
   }
 
   return text.trim();
 }
 
-export function suggestionPreview(text: string, max = 800): string {
-  const t = text.trim();
-  if (t.length <= max) return t;
-  return `${t.slice(0, max)}…`;
-}

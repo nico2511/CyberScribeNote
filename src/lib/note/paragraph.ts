@@ -22,18 +22,20 @@ export function paragraphAtCursor(content: string, cursor: number): ParagraphSpa
   return { start, end, text };
 }
 
-function isMarkdownLine(line: string): boolean {
+export function isMarkdownLine(line: string): boolean {
   const t = line.trim();
   if (!t) return true;
+  if (t.startsWith("> **Contexte**")) return true;
   return (
     t.startsWith("#") ||
     t.startsWith("|") ||
     t.startsWith("```") ||
-    t.startsWith(">") ||
+    (t.startsWith(">") && !t.startsWith("> **Contexte**")) ||
     t.startsWith("- ") ||
     t.startsWith("* ") ||
     /^\d+\.\s/.test(t) ||
-    t === "---"
+    t === "---" ||
+    t.startsWith("![")
   );
 }
 

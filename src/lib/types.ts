@@ -64,7 +64,7 @@ export interface PullProgress {
 
 export type ThemeMode = "light" | "dark";
 
-export type AiAction = "summarize" | "reformulate" | "correct" | "translate_en" | "custom";
+export type AiAction = "summarize" | "reformulate" | "correct" | "translate" | "custom";
 
 export type AiSuggestionSource = "manual" | "proactive";
 
@@ -75,8 +75,12 @@ export interface AiSuggestion {
   scope: string;
   proposedText: string;
   originalText: string;
+  /** Note à laquelle cette suggestion appartient — ignore si différente de la note active. */
+  notePath?: string;
   source?: AiSuggestionSource;
   reason?: string;
+  /** Mode d'application : append = complément en fin de note (résumés). */
+  applyMode?: "replace" | "append";
   selection?: { start: number; end: number; text: string };
 }
 
@@ -115,4 +119,20 @@ export interface WhisperCacheEntry {
   path: string;
   sizeBytes: number;
   isDir: boolean;
+}
+
+export interface RagHit {
+  path: string;
+  title: string;
+  text: string;
+  score: number;
+}
+
+export interface RagStatus {
+  indexed: boolean;
+  model: string;
+  chunkCount: number;
+  noteCount: number;
+  updatedAt?: string;
+  indexPath: string;
 }

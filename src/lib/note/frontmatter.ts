@@ -46,12 +46,6 @@ export function setNoteContext(content: string, context: string): string {
   return prefix + nextBody;
 }
 
-export function formatContextBlock(context: string): string {
-  const trimmed = context.trim();
-  if (!trimmed) return "";
-  return `> **Contexte** · ${trimmed}`;
-}
-
 export function noteBody(content: string): string {
   return noteBodyRange(content).body;
 }

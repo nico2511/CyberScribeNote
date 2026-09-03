@@ -1,23 +1,7 @@
 import type { ParagraphSpan } from "$lib/note/paragraph";
+import { isMarkdownLine } from "$lib/note/paragraph";
 import { likelyNeedsCorrection } from "$lib/ai/typoHints";
 import { noteBodyRange } from "$lib/note/frontmatter";
-
-function isMarkdownLine(line: string): boolean {
-  const t = line.trim();
-  if (!t) return true;
-  if (t.startsWith("> **Contexte**")) return true;
-  return (
-    t.startsWith("#") ||
-    t.startsWith("|") ||
-    t.startsWith("```") ||
-    (t.startsWith(">") && !t.startsWith("> **Contexte**")) ||
-    t.startsWith("- ") ||
-    t.startsWith("* ") ||
-    /^\d+\.\s/.test(t) ||
-    t === "---" ||
-    t.startsWith("![")
-  );
-}
 
 /** Parcourt les lignes avec offsets exacts (gère \r\n). */
 function iterateLines(
@@ -49,32 +33,9 @@ function scanLines(text: string, baseOffset = 0): ParagraphSpan[] {
   return spans;
 }
 
-/** Repère les lignes de la note contenant des fautes probables. */
-export function scanNoteTypoLines(content: string): ParagraphSpan[] {
-  return scanLines(content, 0);
-}
-
-function scanCleanLines(text: string, baseOffset = 0): ParagraphSpan[] {
-  const spans: ParagraphSpan[] = [];
-
-  iterateLines(text, baseOffset, (line, _raw, start, end) => {
-    if (!isMarkdownLine(line) && line.trim().length >= 25 && !likelyNeedsCorrection(line)) {
-      spans.push({ start, end, text: line });
-    }
-  });
-
-  return spans;
-}
-
 function bodyScan(content: string) {
   const { body, start } = noteBodyRange(content);
   return { body, start };
-}
-
-/** Repère les lignes propres (sans fautes) pour reformulation proactive. */
-export function scanBodyCleanLines(content: string): ParagraphSpan[] {
-  const { body, start } = bodyScan(content);
-  return scanCleanLines(body, start);
 }
 
 /** Scan du corps (hors frontmatter YAML). */

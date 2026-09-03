@@ -14,6 +14,8 @@
     WhisperCacheEntry,
   } from "$lib/types";
   import { APP_NAME, APP_VERSION } from "$lib/version";
+  import type { RagStatus } from "$lib/ai/rag";
+  import { notify } from "$lib/stores/notifications";
 
   interface Props {
     open: boolean;
@@ -34,12 +36,14 @@
     whisperDevice: "auto",
     whisperComputeType: "int8",
     whisperProfile: "fast",
-    maxRecordSeconds: 25,
+    maxRecordSeconds: 90,
   });
   let voiceDeps = $state<VoiceDepsStatus | null>(null);
   let voiceStatus = $state<VoiceStatus | null>(null);
   let whisperCache = $state<WhisperCacheEntry[]>([]);
   let whisperModelsDir = $state("");
+  let ragStatus = $state<RagStatus | null>(null);
+  let ragBusy = $state(false);
   let recommended = $state<RecommendedModel[]>([]);
   let pullProgress = $state<PullProgress | null>(null);
   let pulling = $state(false);
@@ -70,7 +74,7 @@
     if (!silent) loading = true;
     error = "";
     try {
-      const [d, s, rec, vd, vs, wdir, wcache] = await Promise.all([
+      const [d, s, rec, vd, vs, wdir, wcache, rag] = await Promise.all([
         invoke<OllamaDetect>("ollama_detect"),
         invoke<OllamaStatus>("ollama_status"),
         invoke<RecommendedModel[]>("ollama_recommended_models"),
@@ -78,6 +82,7 @@
         invoke<VoiceStatus>("voice_get_status"),
         invoke<string>("voice_models_dir"),
         invoke<WhisperCacheEntry[]>("voice_list_whisper_cache"),
+        invoke<RagStatus>("rag_status").catch(() => null),
       ]);
       detect = d;
       status = s;
@@ -86,11 +91,87 @@
       voiceStatus = vs;
       whisperModelsDir = wdir;
       whisperCache = wcache;
+      ragStatus = rag;
       if (status) onOllamaUpdated(status);
     } catch (e) {
       if (!silent) error = String(e);
     } finally {
       loading = false;
+    }
+  }
+
+  async function reindexRag() {
+    ragBusy = true;
+    error = "";
+    message = "Indexation RAG en cours (embeddings)…";
+    try {
+      ragStatus = await invoke<RagStatus>("rag_reindex");
+      message = `Index RAG prêt — ${ragStatus.chunkCount} extraits · ${ragStatus.noteCount} notes.`;
+    } catch (e) {
+      error = String(e);
+      message = "";
+    } finally {
+      ragBusy = false;
+    }
+  }
+
+  async function waitForWhisperModel(modelName: string, timeoutMs = 300_000): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 1500));
+      voiceStatus = await invoke<VoiceStatus>("voice_get_status");
+      if (voiceStatus?.error) {
+        error = voiceStatus.error;
+        notify({ kind: "error", title: "Échec du modèle Whisper", message: voiceStatus.error });
+        return false;
+      }
+      if (voiceStatus?.modelLoaded) {
+        notify({
+          kind: "success",
+          title: "Modèle Whisper prêt",
+          message: `${modelName} · raccourci ${config.voiceHotkey}`,
+        });
+        return true;
+      }
+      if (!voiceStatus?.modelLoading && !voiceStatus?.modelLoaded && voiceStatus?.running) {
+        error = `Le modèle « ${modelName} » n'a pas pu être chargé.`;
+        notify({ kind: "error", title: "Modèle non chargé", message: error });
+        return false;
+      }
+      message = `Chargement du modèle ${modelName}…`;
+    }
+    error = `Timeout — le modèle « ${modelName} » met trop longtemps à charger.`;
+    notify({ kind: "error", title: "Chargement trop long", message: error });
+    return false;
+  }
+
+  async function applyVoiceConfig() {
+    busy = true;
+    error = "";
+    message = "Application de la configuration vocale…";
+    notify({
+      kind: "info",
+      title: "Configuration vocale",
+      message: `Chargement du modèle ${config.whisperModel}…`,
+      key: "voice-apply",
+    });
+    try {
+      await invoke("save_app_config", { config });
+      await invoke("voice_restart", { force: true });
+      await invoke("voice_preload_whisper_model");
+      const ok = await waitForWhisperModel(config.whisperModel);
+      if (ok) {
+        message = `Voix prête · modèle ${config.whisperModel} · raccourci ${config.voiceHotkey}`;
+      } else {
+        message = "";
+      }
+      await refreshAsync(true);
+    } catch (e) {
+      error = String(e);
+      message = "";
+      notify({ kind: "error", title: "Configuration vocale échouée", message: error });
+    } finally {
+      busy = false;
     }
   }
 
@@ -109,21 +190,7 @@
   }
 
   async function preloadWhisper() {
-    busy = true;
-    error = "";
-    message = "Téléchargement / vérification du modèle Whisper…";
-    try {
-      await invoke("save_app_config", { config });
-      await invoke("voice_restart");
-      await invoke("voice_preload_whisper_model");
-      await new Promise((r) => setTimeout(r, 2000));
-      await refreshAsync(true);
-      message = "Modèle Whisper vérifié.";
-    } catch (e) {
-      error = String(e);
-    } finally {
-      busy = false;
-    }
+    await applyVoiceConfig();
   }
 
   async function saveConfig() {
@@ -132,7 +199,6 @@
     message = "";
     try {
       await invoke("save_app_config", { config });
-      await invoke("voice_restart");
       message = "Configuration enregistrée.";
       await refreshAsync(true);
     } catch (e) {
@@ -395,6 +461,44 @@
           {/if}
         </section>
 
+        <!-- RAG -->
+        <section class="space-y-3 border-t border-border pt-4">
+          <h3 class="text-sm font-semibold">RAG · recherche sémantique</h3>
+          <p class="text-[11px] text-text-muted leading-relaxed">
+            Indexe le vault avec <code class="text-accent-blue">nomic-embed-text</code> pour enrichir
+            résumé, reformulation et prompts custom avec des extraits d'autres notes.
+          </p>
+          <div class="rounded-2xl border border-border bg-surface-muted p-3 text-xs space-y-1">
+            <div class="flex justify-between">
+              <span class="text-text-muted">État</span>
+              <span class={ragStatus?.indexed ? "text-accent-mint" : "text-text-muted"}>
+                {ragStatus?.indexed ? "Indexé" : "Non indexé"}
+              </span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-text-muted">Extraits</span>
+              <span>{ragStatus?.chunkCount ?? 0}</span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-text-muted">Notes</span>
+              <span>{ragStatus?.noteCount ?? 0}</span>
+            </div>
+            {#if ragStatus?.updatedAt}
+              <p class="truncate text-[10px] text-text-muted" title={ragStatus.updatedAt}>
+                Maj · {ragStatus.updatedAt}
+              </p>
+            {/if}
+          </div>
+          <button
+            type="button"
+            class="w-full rounded-2xl bg-accent-lavender/40 py-2 text-xs font-medium hover:bg-accent-lavender/60 disabled:opacity-50"
+            disabled={busy || ragBusy || pulling}
+            onclick={reindexRag}
+          >
+            {ragBusy ? "Indexation…" : "Indexer / réindexer le vault"}
+          </button>
+        </section>
+
         <!-- Voix -->
         <section class="space-y-3 border-t border-border pt-4">
           <h3 class="text-sm font-semibold">Voix (CyberScribe)</h3>
@@ -469,8 +573,9 @@
           </div>
 
           <label class="block space-y-1">
-            <span class="text-xs text-text-muted">Raccourci global</span>
+            <span class="text-xs text-text-muted">Raccourci push-to-talk (PTT)</span>
             <input type="text" class="w-full rounded-xl border border-border bg-bg px-3 py-2 text-sm outline-none" bind:value={config.voiceHotkey} placeholder="F8" />
+            <span class="text-[10px] text-text-muted">Appuyez pour démarrer l'enregistrement, rappuyez pour transcrire. Pas d'écoute continue.</span>
           </label>
 
           <div class="grid grid-cols-2 gap-2">
@@ -504,6 +609,21 @@
               <input type="number" min="0" max="600" class="w-full rounded-xl border border-border bg-bg px-2 py-2 text-xs" bind:value={config.maxRecordSeconds} />
             </label>
           </div>
+          <p class="text-[10px] text-text-muted">
+            90 s recommandé pour les phrases longues. 25 s les coupe souvent. 0 = pas de limite.
+          </p>
+
+          <button
+            type="button"
+            class="w-full rounded-2xl bg-accent-mint/40 py-2 text-xs font-medium hover:bg-accent-mint/60 disabled:opacity-50"
+            disabled={busy || !voiceDeps?.depsOk}
+            onclick={applyVoiceConfig}
+          >
+            {busy ? "Application…" : "Appliquer la config voix"}
+          </button>
+          <p class="text-[10px] text-text-muted">
+            Obligatoire après changement de modèle ou de raccourci. Attend la fin du chargement Whisper.
+          </p>
         </section>
 
         {#if message}

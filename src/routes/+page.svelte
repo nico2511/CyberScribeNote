@@ -10,19 +10,37 @@
   import VoiceOverlay from "$lib/components/VoiceOverlay.svelte";
   import AiCompanionPanel from "$lib/components/AiCompanionPanel.svelte";
   import { applyTheme, loadTheme, saveTheme, toggleTheme } from "$lib/stores/theme";
-  import { parseNoteContext, setNoteContext, ensureVisibleContextBlock } from "$lib/note/frontmatter";
   import type { ParagraphSpan } from "$lib/note/paragraph";
-  import { loadProactiveEnabled, saveProactiveEnabled, loadAutoTypoFixEnabled, saveAutoTypoFixEnabled } from "$lib/stores/companion";
+  import {
+    loadProactiveEnabled,
+    saveProactiveEnabled,
+    loadAutoTypoFixEnabled,
+    saveAutoTypoFixEnabled,
+    loadAutoSummarizeEnabled,
+    saveAutoSummarizeEnabled,
+  } from "$lib/stores/companion";
   import { autoFixAllTypoLines, tryAutoFixSpan, lineNeedsAiTypoFix } from "$lib/ai/autoTypo";
   import { sanitizeAiOutput } from "$lib/ai/sanitize";
   import { hasMeaningfulDiff } from "$lib/ai/textDiff";
-import { buildAiProposal, buildLocalCorrection } from "$lib/ai/buildProposal";
-import { finalizeCorrection } from "$lib/ai/localCorrect";
-import { isFaithfulCorrection } from "$lib/ai/faithful";
-import { likelyNeedsCorrection } from "$lib/ai/typoHints";
-import { scanBodyTypoLines, scanBodyCleanLines, bodyHasTypoLines } from "$lib/note/scanTypos";
-  import { insertTranscript, parseVoiceTranscript } from "$lib/voice/keywords";
+  import { buildAiProposal, buildLocalCorrection } from "$lib/ai/buildProposal";
+  import { finalizeCorrection } from "$lib/ai/localCorrect";
+  import { isFaithfulCorrection } from "$lib/ai/faithful";
+  import { likelyNeedsCorrection } from "$lib/ai/typoHints";
+  import { scanBodyTypoLines, bodyHasTypoLines } from "$lib/note/scanTypos";
+  import { parseVoiceTranscript } from "$lib/voice/keywords";
   import { replaceTextRange, type AiActionRequest, type TextSelection } from "$lib/voice/commands";
+  import { resolveWikilink } from "$lib/vault/wikilinks";
+  import {
+    extractExistingSummary,
+    formatSummaryAppendix,
+    isDuplicateSummary,
+    translateLangLabel,
+  } from "$lib/ai/languages";
+  import { fetchRagContext } from "$lib/ai/rag";
+  import { noteBody, parseNoteContext, setNoteContext, ensureVisibleContextBlock } from "$lib/note/frontmatter";
+  import { mergeBodyMarkdown } from "$lib/markdown/bridge";
+  import PixelIcon from "$lib/components/PixelIcon.svelte";
+  import { dismissToast, notify } from "$lib/stores/notifications";
   import type {
     AiAction,
     OllamaStatus,
@@ -43,7 +61,6 @@ import { scanBodyTypoLines, scanBodyCleanLines, bodyHasTypoLines } from "$lib/no
   let savedContent = $state("");
   let dirty = $state(false);
   let saving = $state(false);
-  let preview = $state(false);
   let theme = $state<ThemeMode>("light");
   let searchOpen = $state(false);
   let settingsOpen = $state(false);
@@ -61,15 +78,21 @@ import { scanBodyTypoLines, scanBodyCleanLines, bodyHasTypoLines } from "$lib/no
   let aiLoading = $state(false);
   let companionOpen = $state(false);
   let aiSuggestions = $state<AiSuggestion[]>([]);
-  let proactiveEnabled = $state(true);
+  let proactiveEnabled = $state(false);
   let autoTypoFixEnabled = $state(true);
+  let autoSummarizeEnabled = $state(false);
   let proactiveLoading = $state(false);
   let editorCursor = $state<number | null>(null);
   let editorSelection = $state<TextSelection | null>(null);
+  /** Dernière position curseur connue (pour insérer la dictée au bon endroit). */
+  let lastCaretOffset = 0;
+  let pendingImageMarkdown = $state<string | null>(null);
   let autoTypoNoticeTimer: ReturnType<typeof setTimeout> | null = null;
-  let aiTypoFixBusy = false;
+  let autoTypoFixBusy = false;
   let proactiveStatus = $state("");
   let statusMessage = $state("");
+  let autoSummaryTimer: ReturnType<typeof setTimeout> | null = null;
+  let lastAutoSummaryKey = "";
   let voiceStatus = $state<VoiceStatus>({
     running: false,
     recording: false,
@@ -107,9 +130,27 @@ import { scanBodyTypoLines, scanBodyCleanLines, bodyHasTypoLines } from "$lib/no
   let lastProactiveAt = 0;
   let lastProactiveKey = "";
   let voiceTranscriptChain: Promise<void> = Promise.resolve();
+  let voiceLoadingToastId: string | null = null;
   let noteScanTimer: ReturnType<typeof setTimeout> | null = null;
   let fullTypoScanTimer: ReturnType<typeof setTimeout> | null = null;
-  let autoTypoFixBusy = false;
+  /** Invalide les réponses IA en cours quand on change de note. */
+  let aiEpoch = 0;
+  let noteOpenedAt = 0;
+  /** Après une action IA manuelle (traduction…), ne pas relancer typo/proactif. */
+  let aiQuietUntil = 0;
+
+  function silenceAiHelpers(ms = 90000) {
+    aiQuietUntil = Date.now() + ms;
+    // N'annule que les scans « suggestions » — la correction de fautes reste active
+    if (noteScanTimer) {
+      clearTimeout(noteScanTimer);
+      noteScanTimer = null;
+    }
+  }
+
+  function isAiQuiet() {
+    return Date.now() < aiQuietUntil;
+  }
 
   async function refreshVoice() {
     voiceStatus = await invoke<VoiceStatus>("voice_get_status");
@@ -117,32 +158,93 @@ import { scanBodyTypoLines, scanBodyCleanLines, bodyHasTypoLines } from "$lib/no
 
   async function handleVoiceToggle() {
     if (voiceStatus.transcribing) {
-      statusMessage = "Transcription en cours — patientez quelques secondes.";
+      const msg = "Transcription en cours — patientez quelques secondes.";
+      statusMessage = msg;
+      notify({ kind: "info", title: "Transcription en cours", message: msg });
       return;
+    }
+    await refreshVoice();
+    if (voiceStatus.modelLoading) {
+      const msg = "Chargement du modèle Whisper en cours — patientez avant de dicter.";
+      statusMessage = msg;
+      notify({ kind: "warning", title: "Modèle en chargement", message: msg });
+      return;
+    }
+    if (voiceStatus.running && !voiceStatus.modelLoaded) {
+      const msg = "Modèle Whisper non chargé — Réglages → Voix → « Appliquer la config voix ».";
+      statusMessage = msg;
+      notify({ kind: "warning", title: "Dictée indisponible", message: msg });
+      return;
+    }
+    if (voiceStatus.error) {
+      // Erreurs non bloquantes (timeout d'enregistrement, etc.) : on laisse retenter
+      const soft =
+        voiceStatus.error.includes("automatiquement") ||
+        voiceStatus.error.includes("Transcription encore");
+      if (!soft) {
+        statusMessage = `Voix : ${voiceStatus.error}`;
+        notify({ kind: "error", title: "Erreur vocale", message: voiceStatus.error });
+        return;
+      }
     }
     try {
       await invoke("voice_toggle");
       await refreshVoice();
     } catch (e) {
-      statusMessage = String(e);
-      try {
-        await invoke("voice_restart");
-        await refreshVoice();
-        statusMessage = "Worker vocal relancé.";
-      } catch {
-        /* keep original error */
-      }
+      const msg = String(e);
+      statusMessage = msg;
+      notify({
+        kind: msg.includes("chargement") || msg.includes("redémarré") ? "warning" : "error",
+        title: "Dictée",
+        message: msg,
+        key: "voice-toggle",
+      });
+      await refreshVoice();
     }
   }
 
+  $effect(() => {
+    if (voiceStatus.modelLoading && !voiceLoadingToastId) {
+      voiceLoadingToastId = notify({
+        kind: "info",
+        title: "Chargement du modèle Whisper…",
+        message: "La dictée sera disponible une fois le chargement terminé.",
+        durationMs: 0,
+        key: "voice-loading",
+      });
+      return;
+    }
+    if (!voiceStatus.modelLoading && voiceLoadingToastId) {
+      dismissToast(voiceLoadingToastId);
+      voiceLoadingToastId = null;
+      if (voiceStatus.modelLoaded && voiceStatus.running) {
+        notify({
+          kind: "success",
+          title: "Dictée prête",
+          message: `Appuyez sur ${voiceStatus.hotkey} pour parler, rappuyez pour transcrire.`,
+          key: "voice-ready",
+        });
+      } else if (voiceStatus.running && !voiceStatus.modelLoaded) {
+        notify({
+          kind: "warning",
+          title: "Modèle Whisper non chargé",
+          message:
+            voiceStatus.error ??
+            "Réglages → Voix → « Appliquer la config voix », puis réessayez.",
+          key: "voice-not-loaded",
+        });
+      }
+    }
+  });
+
   async function tryAiAutoTypoFix(span: ParagraphSpan, baseContent?: string): Promise<boolean> {
-    if (aiTypoFixBusy || !autoTypoFixEnabled || preview) return false;
+    if (autoTypoFixBusy || !autoTypoFixEnabled) return false;
 
     const body = baseContent ?? content;
     const lineText = body.slice(span.start, span.end);
     if (!lineNeedsAiTypoFix(lineText)) return false;
 
-    aiTypoFixBusy = true;
+    autoTypoFixBusy = true;
     try {
       if (!ollamaStatus.available) {
         const ok = await ensureOllamaRunning(true);
@@ -155,6 +257,8 @@ import { scanBodyTypoLines, scanBodyCleanLines, bodyHasTypoLines } from "$lib/no
         content: lineText,
         model: activeModel,
         noteContext: null,
+        targetLanguage: null,
+        ragContext: null,
       });
       const proposal =
         buildAiProposal("correct", lineText, corrected) ??
@@ -175,12 +279,12 @@ import { scanBodyTypoLines, scanBodyCleanLines, bodyHasTypoLines } from "$lib/no
     } catch {
       return false;
     } finally {
-      aiTypoFixBusy = false;
+      autoTypoFixBusy = false;
     }
   }
 
   async function runAiTypoFixPass(baseContent?: string) {
-    if (!autoTypoFixEnabled || !selectedPath || preview) return;
+    if (!autoTypoFixEnabled || !selectedPath) return;
 
     for (let attempt = 0; attempt < 5; attempt++) {
       const body = baseContent ?? content;
@@ -218,12 +322,12 @@ import { scanBodyTypoLines, scanBodyCleanLines, bodyHasTypoLines } from "$lib/no
   }
 
   async function handleAutoTypoFix(_span: ParagraphSpan) {
-    if (!autoTypoFixEnabled || preview || voiceStatus.recording || voiceStatus.transcribing) return;
+    if (!autoTypoFixEnabled || voiceStatus.recording || voiceStatus.transcribing) return;
     await runBatchAutoTypoFix();
   }
 
   async function runBatchAutoTypoFix() {
-    if (!autoTypoFixEnabled || !selectedPath || preview || autoTypoFixBusy) return;
+    if (!autoTypoFixEnabled || !selectedPath || autoTypoFixBusy) return;
     autoTypoFixBusy = true;
 
     try {
@@ -260,19 +364,43 @@ import { scanBodyTypoLines, scanBodyCleanLines, bodyHasTypoLines } from "$lib/no
   }
 
   function appendTranscript(fragment: string) {
-    content = insertTranscript(content, fragment);
-    handleContentChange(content);
+    const raw = fragment.trim();
+    if (!raw) return;
+    const pos = Math.max(0, Math.min(lastCaretOffset, content.length));
+    const before = content.slice(0, pos);
+    const after = content.slice(pos);
+    const needLead =
+      before.length > 0 && !/\s$/.test(before) && !/^[,.;:!?]/.test(raw);
+    const needTrail = after.length > 0 && !/^\s/.test(after) && !/\s$/.test(raw);
+    const inserted = `${needLead ? " " : ""}${raw}${needTrail ? " " : ""}`;
+    const next = before + inserted + after;
+    lastCaretOffset = pos + inserted.length;
+    editorCursor = lastCaretOffset;
+    handleContentChange(next);
+    // Ne pas lancer la correction auto immédiatement : Whisper + Ollama en même temps
+    // peut tuer le worker Python (mémoire). On attend que la dictée soit stable.
     if (autoTypoFixEnabled) {
-      queueMicrotask(() => runBatchAutoTypoFix());
+      silenceAiHelpers(8000);
+      setTimeout(() => {
+        if (!voiceStatus.recording && !voiceStatus.transcribing) {
+          void runBatchAutoTypoFix();
+        }
+      }, 5000);
     }
   }
 
   async function handleVoiceTranscript(text: string) {
     voiceTranscriptChain = voiceTranscriptChain.then(async () => {
       if (!text.trim()) {
-        statusMessage = "Aucune parole détectée — parlez un peu plus fort ou plus longtemps.";
+        const msg =
+          "Aucune parole reconnue — phrase trop longue, trop de pauses, ou micro trop bas. Réessayez, ou passez la durée max à 90 s (Réglages → Voix).";
+        statusMessage = msg;
+        notify({ kind: "warning", title: "Aucune parole détectée", message: msg, key: "voice-empty" });
         return;
       }
+
+      // Ne pas laisser un scan fautes écraser le feedback vocal tout de suite
+      silenceAiHelpers(8000);
 
       const parsed = parseVoiceTranscript(text);
 
@@ -283,25 +411,62 @@ import { scanBodyTypoLines, scanBodyCleanLines, bodyHasTypoLines } from "$lib/no
         return;
       }
 
+      if (parsed.kind === "open") {
+        await openNoteByQuery(parsed.query);
+        return;
+      }
+
       if (parsed.kind === "ai") {
         if (!selectedPath) {
-          statusMessage = "Ouvrez une note pour les commandes IA vocales.";
+          statusMessage = "Ouvrez une note pour les commandes IA vocales (PTT).";
           return;
         }
-        await handleAiAction({ action: parsed.action });
+        if (!ollamaStatus.available && parsed.action !== "correct") {
+          const ok = await ensureOllamaRunning(true);
+          if (!ok) {
+            statusMessage = "Ollama hors ligne — impossible d'exécuter la commande IA.";
+            settingsOpen = true;
+            return;
+          }
+        }
+        statusMessage = `Commande vocale : ${parsed.action}…`;
+        await handleAiAction({
+          action: parsed.action,
+          translateTo: parsed.translateTo,
+        });
         return;
       }
 
       if (!selectedPath) {
-        statusMessage = "Ouvrez une note pour insérer la transcription.";
+        const msg = "Ouvrez une note pour insérer la dictée (PTT).";
+        statusMessage = msg;
+        notify({ kind: "warning", title: "Note requise", message: msg });
         return;
       }
 
       appendTranscript(parsed.text);
-      statusMessage = "Transcription insérée.";
+      const preview = `« ${parsed.text.slice(0, 60)}${parsed.text.length > 60 ? "…" : ""} »`;
+      statusMessage = `Dictée insérée : ${preview}`;
+      notify({ kind: "success", title: "Dictée insérée", message: preview });
     });
 
     await voiceTranscriptChain;
+  }
+
+  async function openNoteByQuery(query: string) {
+    const match = resolveWikilink(query, entries);
+    if (!match) {
+      statusMessage = `Aucune note trouvée pour « ${query} ».`;
+      openSearch();
+      await runSearch(query);
+      return;
+    }
+    await loadNote(match.path);
+    statusMessage = `Note ouverte : ${match.title}`;
+  }
+
+  function handleOpenWikilink(title: string) {
+    void openNoteByQuery(title);
   }
 
   async function refreshOllama() {
@@ -365,23 +530,31 @@ import { scanBodyTypoLines, scanBodyCleanLines, bodyHasTypoLines } from "$lib/no
   }
 
   async function loadNote(path: string) {
-    if (dirty && selectedPath) {
-      await persistNote(selectedPath, content);
+    if (selectedPath && selectedPath !== path) {
+      if (dirty) await persistNote(selectedPath, content);
     }
+    aiEpoch += 1;
+    noteOpenedAt = Date.now();
+    if (autoSummaryTimer) clearTimeout(autoSummaryTimer);
+    if (noteScanTimer) clearTimeout(noteScanTimer);
+    if (fullTypoScanTimer) clearTimeout(fullTypoScanTimer);
+
     selectedPath = path;
     const raw = await invoke<string>("read_note", { relativePath: path });
     content = ensureVisibleContextBlock(raw);
     savedContent = content;
     dirty = false;
-    preview = false;
     aiSuggestions = [];
     editorSelection = null;
     lastProactiveKey = "";
+    lastAutoSummaryKey = "";
+    proactiveStatus = "";
     companionOpen = true;
     if (content !== raw) {
       await persistNote(path, content);
     }
     scheduleNoteScan(4000);
+    scheduleAutoSummary(45000);
     if (autoTypoFixEnabled) {
       queueMicrotask(() => void runBatchAutoTypoFix());
     }
@@ -407,7 +580,7 @@ import { scanBodyTypoLines, scanBodyCleanLines, bodyHasTypoLines } from "$lib/no
   }
 
   function scheduleFullTypoScan(delayMs = 1200) {
-    if (!autoTypoFixEnabled || !selectedPath || preview) return;
+    if (!autoTypoFixEnabled || !selectedPath) return;
     if (fullTypoScanTimer) clearTimeout(fullTypoScanTimer);
     fullTypoScanTimer = setTimeout(() => {
       void runBatchAutoTypoFix();
@@ -419,7 +592,100 @@ import { scanBodyTypoLines, scanBodyCleanLines, bodyHasTypoLines } from "$lib/no
     dirty = value !== savedContent;
     scheduleAutoSave();
     scheduleFullTypoScan(1200);
-    scheduleNoteScan(8000);
+    if (!isAiQuiet()) {
+      scheduleNoteScan(8000);
+    }
+    scheduleAutoSummary(40000);
+  }
+
+  function scheduleAutoSummary(delayMs = 40000) {
+    if (!autoSummarizeEnabled || !selectedPath) return;
+    // Après ouverture, attendre au moins 45 s avant le premier résumé auto
+    const sinceOpen = Date.now() - noteOpenedAt;
+    const wait = Math.max(delayMs, 45000 - sinceOpen);
+    if (autoSummaryTimer) clearTimeout(autoSummaryTimer);
+    autoSummaryTimer = setTimeout(() => {
+      void maybeAutoSummarize(selectedPath!, content);
+    }, wait);
+  }
+
+  async function maybeAutoSummarize(path: string, body: string) {
+    if (!autoSummarizeEnabled) return;
+    // Pas de résumé auto juste après ouverture (évite le spam à chaud)
+    if (Date.now() - noteOpenedAt < 20000) return;
+
+    const epoch = aiEpoch;
+    const text = noteBody(body).trim();
+    if (text.length < 280) return;
+    if (text.split(/\s+/).length < 40) return;
+
+    const existing = extractExistingSummary(body);
+    const key = `${path}:${text.length}:${text.slice(0, 80)}`;
+    if (key === lastAutoSummaryKey) return;
+    if (aiLoading || proactiveLoading) return;
+
+    if (!ollamaStatus.available) {
+      const ok = await ensureOllamaRunning(true);
+      if (!ok) return;
+    }
+
+    const already = aiSuggestions.some(
+      (s) =>
+        s.action === "summarize" &&
+        s.source === "proactive" &&
+        s.notePath === path &&
+        !s.selection,
+    );
+    if (already) return;
+
+    try {
+      statusMessage = "Résumé automatique en cours…";
+      const ragContext = await fetchRagContext(text.slice(0, 800), path);
+      if (epoch !== aiEpoch || selectedPath !== path) return;
+
+      const result = await invoke<string>("ollama_summarize_note", {
+        content: text,
+        model: activeModel,
+        noteContext: parseNoteContext(body).trim() || null,
+        ragContext: ragContext || null,
+      });
+      if (epoch !== aiEpoch || selectedPath !== path) return;
+
+      const proposal = buildAiProposal("summarize", text, result);
+      if (!proposal) return;
+      if (isDuplicateSummary(existing, proposal)) {
+        lastAutoSummaryKey = key;
+        statusMessage = "Résumé déjà à jour — aucune proposition.";
+        return;
+      }
+
+      lastAutoSummaryKey = key;
+      companionOpen = true;
+      const suggestion: AiSuggestion = {
+        id: crypto.randomUUID(),
+        action: "summarize",
+        label: "Résumé",
+        scope: "à ajouter en fin de note",
+        proposedText: proposal,
+        originalText: "",
+        notePath: path,
+        source: "proactive",
+        applyMode: "append",
+        reason: "Inactivité d'édition — complément, pas un remplacement",
+      };
+      aiSuggestions = [suggestion, ...aiSuggestions.filter((s) => s.notePath === path)].slice(0, 12);
+      statusMessage = "Résumé prêt (ajout en fin de note) — appliquez ou ignorez.";
+    } catch (e) {
+      if (epoch === aiEpoch && selectedPath === path) {
+        statusMessage = `Résumé auto indisponible : ${e}`;
+      }
+    }
+  }
+
+  function handleAutoSummarizeToggle(enabled: boolean) {
+    autoSummarizeEnabled = enabled;
+    saveAutoSummarizeEnabled(enabled);
+    if (enabled) scheduleAutoSummary(5000);
   }
 
   async function handleCreateNote(parentPath: string) {
@@ -472,9 +738,13 @@ import { scanBodyTypoLines, scanBodyCleanLines, bodyHasTypoLines } from "$lib/no
   }
 
   async function handleAiAction(request: AiActionRequest) {
-    const { action, selection: sel } = request;
-    const targetText = sel?.text ?? content;
+    const { action, selection: sel, translateTo } = request;
+    const fullNote = !sel;
+    const targetText = sel?.text ?? noteBody(content);
     if (!targetText.trim()) return;
+
+    const epoch = aiEpoch;
+    const pathAtStart = selectedPath;
 
     if (!ollamaStatus.available && action !== "correct") {
       const started = await ensureOllamaRunning(true);
@@ -487,19 +757,33 @@ import { scanBodyTypoLines, scanBodyCleanLines, bodyHasTypoLines } from "$lib/no
 
     aiLoading = true;
     companionOpen = true;
+    const lang = translateTo ?? "en";
     const labels: Record<AiAction, string> = {
       summarize: "Résumé",
       reformulate: "Reformulation",
       correct: "Correction",
-      translate_en: "Traduction",
+      translate: `Traduction (${translateLangLabel(lang)})`,
       custom: "Prompt custom",
     };
-    const scope = sel ? "sélection" : "note";
+    const scope =
+      action === "summarize"
+        ? "à ajouter en fin de note"
+        : sel
+          ? "sélection"
+          : "note";
     statusMessage = `${labels[action]} (${scope}) — suggestion en cours…`;
+
+    const stillCurrent = () => epoch === aiEpoch && selectedPath === pathAtStart;
 
     try {
       let result = "";
       const ctx = noteContext.trim() || null;
+      const wantsRag = action === "summarize" || action === "reformulate" || action === "custom";
+      const ragContext = wantsRag
+        ? await fetchRagContext(targetText.slice(0, 800), pathAtStart)
+        : "";
+
+      if (!stillCurrent()) return;
 
       if (action === "correct" && !ollamaStatus.available) {
         result = "";
@@ -508,6 +792,16 @@ import { scanBodyTypoLines, scanBodyCleanLines, bodyHasTypoLines } from "$lib/no
           content: targetText,
           model: activeModel,
           noteContext: ctx,
+          ragContext: ragContext || null,
+        });
+      } else if (action === "translate") {
+        result = await invoke<string>("ollama_transform_note", {
+          action: "translate",
+          content: targetText,
+          model: activeModel,
+          noteContext: ctx,
+          targetLanguage: translateLangLabel(lang).toLowerCase(),
+          ragContext: null,
         });
       } else {
         result = await invoke<string>("ollama_transform_note", {
@@ -515,26 +809,27 @@ import { scanBodyTypoLines, scanBodyCleanLines, bodyHasTypoLines } from "$lib/no
           content: targetText,
           model: activeModel,
           noteContext: action === "correct" ? null : ctx,
+          targetLanguage: null,
+          ragContext: action === "reformulate" ? ragContext || null : null,
         });
       }
+
+      if (!stillCurrent()) return;
 
       const proposal = buildAiProposal(action, targetText, result);
       if (!proposal && action === "correct") {
         const localOnly = buildLocalCorrection(targetText);
         if (localOnly && hasMeaningfulDiff(targetText, localOnly)) {
-          aiSuggestions = [
-            {
-              id: crypto.randomUUID(),
-              action,
-              label: labels[action],
-              scope,
-              proposedText: localOnly,
-              originalText: targetText,
-              source: "manual" as const,
-              selection: sel ? { start: sel.start, end: sel.end, text: sel.text } : undefined,
-            },
-            ...aiSuggestions,
-          ].slice(0, 12);
+          pushSuggestion({
+            action,
+            label: labels[action],
+            scope,
+            proposedText: localOnly,
+            originalText: targetText,
+            source: "manual",
+            notePath: pathAtStart ?? undefined,
+            selection: sel ? { start: sel.start, end: sel.end, text: sel.text } : undefined,
+          });
           statusMessage = "Correction locale proposée.";
           return;
         }
@@ -548,37 +843,88 @@ import { scanBodyTypoLines, scanBodyCleanLines, bodyHasTypoLines } from "$lib/no
         return;
       }
 
-      aiSuggestions = [
-        {
-          id: crypto.randomUUID(),
-          action,
-          label: labels[action],
-          scope,
-          proposedText: proposal,
-          originalText: targetText,
-          source: "manual" as const,
-          selection: sel ? { start: sel.start, end: sel.end, text: sel.text } : undefined,
-        },
-        ...aiSuggestions,
-      ].slice(0, 12);
-      statusMessage = `Suggestion « ${labels[action]} » prête — appliquez ou ignorez.`;
+      if (action === "summarize") {
+        if (isDuplicateSummary(extractExistingSummary(content), proposal)) {
+          statusMessage = "Ce résumé est déjà présent dans la note.";
+          return;
+        }
+      }
+
+      if (
+        (action === "translate" || action === "reformulate") &&
+        !hasMeaningfulDiff(targetText, proposal)
+      ) {
+        statusMessage = "La proposition est identique au texte actuel.";
+        return;
+      }
+
+      const isSummary = action === "summarize";
+
+      // Traduction sélection : appliquer tout de suite + silence des helpers auto
+      if (!isSummary && action === "translate" && sel) {
+        const next = replaceTextRange(content, sel.start, sel.end, proposal);
+        silenceAiHelpers(120000);
+        handleContentChange(next);
+        editorCursor = sel.start + proposal.length;
+        companionOpen = true;
+        statusMessage = `${labels[action]} appliquée.`;
+        return;
+      }
+
+      // Traduction / reformulation / correction sur toute la note : appliquer tout de suite
+      if (
+        fullNote &&
+        !isSummary &&
+        (action === "translate" || action === "reformulate" || action === "correct")
+      ) {
+        const next = mergeBodyMarkdown(content, proposal.trim() + "\n");
+        silenceAiHelpers(action === "translate" ? 120000 : 90000);
+        handleContentChange(next);
+        editorCursor = Math.min(next.length, Math.max(1, proposal.length));
+        companionOpen = true;
+        statusMessage = `${labels[action]} appliquée à la note.`;
+        return;
+      }
+
+      if (!isSummary && (action === "reformulate" || action === "correct") && sel) {
+        silenceAiHelpers(60000);
+      }
+
+      pushSuggestion({
+        action,
+        label: labels[action],
+        scope,
+        proposedText: proposal,
+        originalText: isSummary ? "" : targetText,
+        source: "manual",
+        notePath: pathAtStart ?? undefined,
+        applyMode: isSummary ? "append" : "replace",
+        reason: isSummary
+          ? "Sera ajouté en fin de note (complément)"
+          : undefined,
+        selection:
+          isSummary || !sel
+            ? undefined
+            : { start: sel.start, end: sel.end, text: sel.text },
+      });
+      statusMessage = isSummary
+        ? "Résumé prêt — appliquez pour l'ajouter en fin de note."
+        : `Suggestion « ${labels[action]} » prête — cliquez « Appliquer » dans le Compagnon.`;
     } catch (e) {
+      if (!stillCurrent()) return;
       if (action === "correct") {
         const proposal = buildAiProposal("correct", targetText, "");
         if (proposal) {
-          aiSuggestions = [
-            {
-              id: crypto.randomUUID(),
-              action,
-              label: labels[action],
-              scope,
-              proposedText: proposal,
-              originalText: targetText,
-              source: "manual" as const,
-              selection: sel ? { start: sel.start, end: sel.end, text: sel.text } : undefined,
-            },
-            ...aiSuggestions,
-          ].slice(0, 12);
+          pushSuggestion({
+            action,
+            label: labels[action],
+            scope,
+            proposedText: proposal,
+            originalText: targetText,
+            source: "manual",
+            notePath: pathAtStart ?? undefined,
+            selection: sel ? { start: sel.start, end: sel.end, text: sel.text } : undefined,
+          });
           statusMessage = "Correction locale proposée.";
           return;
         }
@@ -589,9 +935,26 @@ import { scanBodyTypoLines, scanBodyCleanLines, bodyHasTypoLines } from "$lib/no
     }
   }
 
-  async function handleCustomPrompt(instruction: string) {
-    if (!instruction.trim() || !selectedPath || preview) return;
+  function pushSuggestion(
+    partial: Omit<AiSuggestion, "id"> & { id?: string },
+  ) {
+    const path = partial.notePath ?? selectedPath ?? undefined;
+    const suggestion: AiSuggestion = {
+      id: partial.id ?? crypto.randomUUID(),
+      ...partial,
+      notePath: path,
+    };
+    aiSuggestions = [
+      suggestion,
+      ...aiSuggestions.filter((s) => !s.notePath || s.notePath === path),
+    ].slice(0, 12);
+  }
 
+  async function handleCustomPrompt(instruction: string) {
+    if (!instruction.trim() || !selectedPath) return;
+
+    const epoch = aiEpoch;
+    const pathAtStart = selectedPath;
     const sel = editorSelection;
     const targetText = sel?.text ?? content;
     if (!targetText.trim()) {
@@ -619,7 +982,10 @@ import { scanBodyTypoLines, scanBodyCleanLines, bodyHasTypoLines } from "$lib/no
         content: targetText,
         model: activeModel,
         noteContext: noteContext.trim() || null,
+        ragContext: (await fetchRagContext(targetText.slice(0, 800), pathAtStart)) || null,
       });
+
+      if (epoch !== aiEpoch || selectedPath !== pathAtStart) return;
 
       const proposal = buildAiProposal("custom", targetText, result);
       if (!proposal) {
@@ -632,23 +998,22 @@ import { scanBodyTypoLines, scanBodyCleanLines, bodyHasTypoLines } from "$lib/no
           ? `Custom : ${instruction.trim().slice(0, 39)}…`
           : `Custom : ${instruction.trim()}`;
 
-      aiSuggestions = [
-        {
-          id: crypto.randomUUID(),
-          action: "custom" as const,
-          label,
-          scope,
-          proposedText: proposal,
-          originalText: targetText,
-          source: "manual" as const,
-          reason: instruction.trim(),
-          selection: sel ? { start: sel.start, end: sel.end, text: sel.text } : undefined,
-        },
-        ...aiSuggestions,
-      ].slice(0, 12);
+      pushSuggestion({
+        action: "custom",
+        label,
+        scope,
+        proposedText: proposal,
+        originalText: targetText,
+        source: "manual",
+        notePath: pathAtStart,
+        reason: instruction.trim(),
+        selection: sel ? { start: sel.start, end: sel.end, text: sel.text } : undefined,
+      });
       statusMessage = "Suggestion custom prête — appliquez ou ignorez.";
     } catch (e) {
-      statusMessage = `Erreur IA : ${e}`;
+      if (epoch === aiEpoch && selectedPath === pathAtStart) {
+        statusMessage = `Erreur IA : ${e}`;
+      }
     } finally {
       aiLoading = false;
     }
@@ -657,25 +1022,46 @@ import { scanBodyTypoLines, scanBodyCleanLines, bodyHasTypoLines } from "$lib/no
   function applySuggestion(id: string) {
     const suggestion = aiSuggestions.find((s) => s.id === id);
     if (!suggestion) return;
+    if (suggestion.notePath && selectedPath && suggestion.notePath !== selectedPath) {
+      aiSuggestions = aiSuggestions.filter((s) => s.id !== id);
+      statusMessage = "Suggestion d'une autre note — ignorée.";
+      return;
+    }
 
-    if (suggestion.action === "summarize" && !suggestion.selection) {
-      const block = `\n\n---\n**${suggestion.label} IA**\n\n${suggestion.proposedText}\n`;
+    // Ne jamais laisser le proactif / typo-IA réécrire juste après une applique manuelle
+    silenceAiHelpers(
+      suggestion.action === "translate" || suggestion.action === "reformulate" ? 120000 : 60000,
+    );
+
+    if (suggestion.applyMode === "append" || suggestion.action === "summarize") {
+      const block = formatSummaryAppendix(suggestion.proposedText, suggestion.label || "Résumé");
+      editorCursor = content.length + block.length;
       handleContentChange(content + block);
     } else if (suggestion.selection) {
+      const start = suggestion.selection.start;
+      const proposed = suggestion.proposedText;
       handleContentChange(
-        replaceTextRange(
-          content,
-          suggestion.selection.start,
-          suggestion.selection.end,
-          suggestion.proposedText,
-        ),
+        replaceTextRange(content, start, suggestion.selection.end, proposed),
       );
+      editorCursor = start + proposed.length;
+    } else if (
+      suggestion.action === "translate" ||
+      suggestion.action === "reformulate" ||
+      suggestion.action === "correct"
+    ) {
+      const next = mergeBodyMarkdown(content, suggestion.proposedText.trim() + "\n");
+      editorCursor = Math.min(next.length, Math.max(1, suggestion.proposedText.length));
+      handleContentChange(next);
     } else {
       handleContentChange(suggestion.proposedText);
+      editorCursor = Math.min(suggestion.proposedText.length, content.length);
     }
 
     aiSuggestions = aiSuggestions.filter((s) => s.id !== id);
-    statusMessage = "Suggestion appliquée.";
+    statusMessage =
+      suggestion.action === "summarize"
+        ? "Résumé ajouté en fin de note."
+        : "Suggestion appliquée.";
   }
 
   function dismissSuggestion(id: string) {
@@ -691,7 +1077,8 @@ import { scanBodyTypoLines, scanBodyCleanLines, bodyHasTypoLines } from "$lib/no
   }
 
   function scheduleNoteScan(delayMs = 5000) {
-    if (!selectedPath || preview) return;
+    if (!selectedPath) return;
+    if (isAiQuiet()) return;
     if (!proactiveEnabled && !autoTypoFixEnabled) return;
     if (noteScanTimer) clearTimeout(noteScanTimer);
     noteScanTimer = setTimeout(() => {
@@ -704,36 +1091,42 @@ import { scanBodyTypoLines, scanBodyCleanLines, bodyHasTypoLines } from "$lib/no
   }
 
   async function scanNoteForSuggestions() {
-    if (!selectedPath || preview) return;
+    if (!selectedPath) return;
 
     if (autoTypoFixEnabled && !aiLoading) {
       await runBatchAutoTypoFix();
     }
 
-    if (proactiveLoading || aiLoading || !proactiveEnabled) return;
-    if (bodyHasTypoLines(content)) {
-      proactiveStatus = "Correction des fautes…";
+    if (proactiveLoading || aiLoading || !proactiveEnabled || isAiQuiet()) return;
+
+    const typoLines = scanBodyTypoLines(content);
+    if (typoLines.length) {
+      const target = typoLines.find((line) => !hasSuggestionForSpan(line));
+      if (target) {
+        await processProactiveSpan(
+          { ...target, text: content.slice(target.start, target.end) },
+          "passage fautif",
+        );
+      } else if (!proactiveStatus) {
+        proactiveStatus = "Des fautes restent — utilisez Corriger (clic droit) si besoin.";
+      }
       return;
     }
 
-    const lines = scanBodyCleanLines(content);
-    const target = lines.find((line) => !hasSuggestionForSpan(line));
-    if (!target) return;
-
-    await processProactiveSpan(target, "passage repéré");
+    proactiveStatus = "";
   }
 
   async function processProactiveSpan(span: ParagraphSpan, scopeLabel = "passage en cours") {
-    if (!proactiveEnabled || !selectedPath || preview) return;
-    if (likelyNeedsCorrection(span.text)) return;
-    if (bodyHasTypoLines(content)) return;
+    if (!proactiveEnabled || !selectedPath || isAiQuiet()) return;
+    if (bodyHasTypoLines(content) && !likelyNeedsCorrection(span.text)) return;
 
-    const minLen = likelyNeedsCorrection(span.text) ? 12 : 25;
+    const minLen = 12;
     if (span.text.trim().length < minLen) return;
+    if (!likelyNeedsCorrection(span.text)) return;
     if (aiLoading || proactiveLoading) return;
 
     const now = Date.now();
-    const cooldown = likelyNeedsCorrection(span.text) ? 8000 : 20000;
+    const cooldown = 30000;
     const key = `${selectedPath}:${span.start}:${span.end}:${span.text.trim()}`;
     if (now - lastProactiveAt < cooldown && key === lastProactiveKey) return;
     if (key === lastProactiveKey && hasSuggestionForSpan(span)) return;
@@ -742,8 +1135,10 @@ import { scanBodyTypoLines, scanBodyCleanLines, bodyHasTypoLines } from "$lib/no
 
     proactiveLoading = true;
     companionOpen = true;
-    proactiveStatus = "Analyse du passage en cours…";
+    proactiveStatus = "Vérification orthographique…";
     statusMessage = proactiveStatus;
+    const epoch = aiEpoch;
+    const pathAtStart = selectedPath;
 
     const addSuggestion = (
       action: AiAction,
@@ -752,28 +1147,28 @@ import { scanBodyTypoLines, scanBodyCleanLines, bodyHasTypoLines } from "$lib/no
       reason?: string,
       scopeLabel = "passage en cours",
     ) => {
-      aiSuggestions = [
-        {
-          id: crypto.randomUUID(),
-          action,
-          label,
-          scope: scopeLabel,
-          source: "proactive" as const,
-          reason,
-          proposedText: proposed,
-          originalText: span.text,
-          selection: { start: span.start, end: span.end, text: span.text },
-        },
-        ...aiSuggestions,
-      ].slice(0, 12);
+      if (epoch !== aiEpoch || selectedPath !== pathAtStart) return;
+      // Uniquement des corrections fidèles — jamais de reformulation auto
+      if (action !== "correct") return;
+      if (!isFaithfulCorrection(span.text, proposed)) return;
+      pushSuggestion({
+        action: "correct",
+        label,
+        scope: scopeLabel,
+        source: "proactive",
+        reason,
+        proposedText: proposed,
+        originalText: span.text,
+        notePath: pathAtStart ?? undefined,
+        selection: { start: span.start, end: span.end, text: span.text },
+      });
       lastProactiveKey = key;
       lastProactiveAt = now;
       proactiveStatus = "";
-      statusMessage = "Suggestion proactive prête — appliquez ou ignorez.";
+      statusMessage = "Correction proposée — appliquez ou ignorez.";
     };
 
     try {
-      // Pas de fautes évidentes → reformulation proactive (contexte note autorisé)
       if (ollamaStatus.available) {
         const result = await invoke<ProactiveSuggestionResponse>("ollama_proactive_suggest", {
           paragraph: span.text,
@@ -782,19 +1177,24 @@ import { scanBodyTypoLines, scanBodyCleanLines, bodyHasTypoLines } from "$lib/no
           model: activeModel,
         });
 
-        if (result.suggest && result.proposed?.trim()) {
-          const isCorrection = result.label?.toLowerCase().includes("correction");
-          const proposed = sanitizeAiOutput(
-            result.proposed,
-            isCorrection ? "correct" : "reformulate",
-          );
-          const action = isCorrection ? ("correct" as const) : ("reformulate" as const);
-          const faithful = isCorrection ? isFaithfulCorrection(span.text, proposed) : true;
+        if (epoch !== aiEpoch || selectedPath !== pathAtStart || isAiQuiet()) return;
 
-          if (proposed.trim() && hasMeaningfulDiff(span.text, proposed) && faithful) {
+        if (result.suggest && result.proposed?.trim()) {
+          const label = result.label?.toLowerCase() ?? "";
+          if (label.includes("reform")) {
+            lastProactiveAt = now;
+            proactiveStatus = "";
+            return;
+          }
+          const proposed = sanitizeAiOutput(result.proposed, "correct");
+          if (
+            proposed.trim() &&
+            hasMeaningfulDiff(span.text, proposed) &&
+            isFaithfulCorrection(span.text, proposed)
+          ) {
             addSuggestion(
-              action,
-              result.label?.trim() || (isCorrection ? "Correction" : "Suggestion"),
+              "correct",
+              result.label?.trim() || "Correction",
               proposed,
               result.reason?.trim(),
               scopeLabel,
@@ -804,9 +1204,11 @@ import { scanBodyTypoLines, scanBodyCleanLines, bodyHasTypoLines } from "$lib/no
         }
       }
 
+      if (epoch !== aiEpoch || selectedPath !== pathAtStart) return;
+
       proactiveStatus = bodyHasTypoLines(content)
         ? "Certaines fautes nécessitent une correction manuelle."
-        : "Aucune reformulation proposée pour ce passage.";
+        : "";
       statusMessage = proactiveStatus;
       lastProactiveAt = now;
     } catch (e) {
@@ -814,23 +1216,21 @@ import { scanBodyTypoLines, scanBodyCleanLines, bodyHasTypoLines } from "$lib/no
       statusMessage = proactiveStatus;
     } finally {
       proactiveLoading = false;
-      scheduleNoteScan(12000);
+      if (!isAiQuiet()) scheduleNoteScan(20000);
     }
   }
 
   async function handleEditingIdle(span: ParagraphSpan) {
-    if (!selectedPath || preview) return;
+    if (!selectedPath) return;
 
     if (autoTypoFixEnabled && bodyHasTypoLines(content)) {
       await runBatchAutoTypoFix();
       return;
     }
 
-    if (!proactiveEnabled) return;
-    scheduleNoteScan(8000);
-    if (!likelyNeedsCorrection(span.text)) {
-      await processProactiveSpan(span);
-    }
+    if (!proactiveEnabled || isAiQuiet()) return;
+    if (!likelyNeedsCorrection(span.text)) return;
+    await processProactiveSpan(span);
   }
 
   function handleProactiveToggle(enabled: boolean) {
@@ -843,10 +1243,9 @@ import { scanBodyTypoLines, scanBodyCleanLines, bodyHasTypoLines } from "$lib/no
     handleContentChange(next);
   }
 
-  async function insertImageMarkdown(relative: string) {
+  async function queueImageMarkdown(relative: string) {
     const alt = relative.split("/").pop()?.replace(/\.[^.]+$/, "") ?? "image";
-    const snippet = `\n\n![${alt}](${relative})\n`;
-    handleContentChange(content + snippet);
+    pendingImageMarkdown = `![${alt}](${relative})`;
     statusMessage = `Image copiée dans ${relative.includes("/_media/") || relative.startsWith("_media/") ? "le dossier de la note" : "media/"}.`;
   }
 
@@ -856,7 +1255,7 @@ import { scanBodyTypoLines, scanBodyCleanLines, bodyHasTypoLines } from "$lib/no
       notePath: selectedPath,
       useGlobalMedia,
     });
-    await insertImageMarkdown(relative);
+    await queueImageMarkdown(relative);
   }
 
   async function importImagesFromPaths(paths: string[]) {
@@ -880,7 +1279,7 @@ import { scanBodyTypoLines, scanBodyCleanLines, bodyHasTypoLines } from "$lib/no
       notePath: selectedPath,
       useGlobalMedia: false,
     });
-    await insertImageMarkdown(relative);
+    await queueImageMarkdown(relative);
   }
 
   async function handleInsertImage() {
@@ -977,6 +1376,7 @@ import { scanBodyTypoLines, scanBodyCleanLines, bodyHasTypoLines } from "$lib/no
     applyTheme(theme);
     proactiveEnabled = loadProactiveEnabled();
     autoTypoFixEnabled = loadAutoTypoFixEnabled();
+    autoSummarizeEnabled = loadAutoSummarizeEnabled();
     await refreshVault();
     await ensureOllamaRunning(true);
     await refreshVoice();
@@ -985,17 +1385,51 @@ import { scanBodyTypoLines, scanBodyCleanLines, bodyHasTypoLines } from "$lib/no
       await listen<VoiceTranscript>("voice-transcript", (event) => {
         handleVoiceTranscript(event.payload.text);
       }),
-      await listen("voice-event", async () => {
+      await listen("voice-event", async (event) => {
         await refreshVoice();
+        const payload = event.payload as {
+          type?: string;
+          message?: string;
+          active?: boolean;
+          loading?: boolean;
+          loaded?: boolean;
+        };
+        if (payload?.type === "error" && payload.message) {
+          const soft =
+            payload.message.includes("Transcription encore") ||
+            payload.message.includes("automatiquement");
+          statusMessage = `Voix : ${payload.message}`;
+          if (!soft) {
+            notify({
+              kind: "error",
+              title: "Erreur vocale",
+              message: payload.message,
+              key: `voice-error:${payload.message}`,
+            });
+          } else {
+            notify({
+              kind: "warning",
+              title: "Voix",
+              message: payload.message,
+              key: "voice-soft",
+            });
+          }
+        }
+        if (payload?.type === "transcript") {
+          // statut rafraîchi ci-dessus
+        }
       }),
       await listen("voice-worker-stopped", async () => {
-        try {
-          await invoke("voice_restart");
-          statusMessage = "Worker vocal relancé automatiquement.";
-        } catch {
-          statusMessage = "Worker vocal arrêté. Réglages → Voix pour relancer.";
-        }
         await refreshVoice();
+        const msg =
+          "Worker vocal arrêté. Réglages → Voix → « Appliquer la config voix » pour le relancer.";
+        statusMessage = msg;
+        notify({
+          kind: "error",
+          title: "Worker vocal arrêté",
+          message: msg,
+          key: "voice-stopped",
+        });
       }),
     );
 
@@ -1017,9 +1451,12 @@ import { scanBodyTypoLines, scanBodyCleanLines, bodyHasTypoLines } from "$lib/no
         type="button"
         class="rounded-lg px-2 py-0.5 transition hover:bg-surface-muted {voiceStatus.recording ? 'bg-danger/20' : ''}"
         onclick={handleVoiceToggle}
-        title="Dictée ({voiceStatus.hotkey}) · commandes dans la bulle en bas à gauche"
+        title="Push-to-talk ({voiceStatus.hotkey}) — appuyez pour parler, rappuyez pour arrêter"
       >
-        🎙 {voiceStatus.recording ? "REC…" : voiceStatus.hotkey}
+        <span class="inline-flex items-center gap-1">
+          <PixelIcon name="mic" size={16} class={voiceStatus.recording ? "text-danger" : ""} />
+          {voiceStatus.recording ? "REC…" : voiceStatus.hotkey}
+        </span>
       </button>
       <button
         type="button"
@@ -1084,30 +1521,37 @@ import { scanBodyTypoLines, scanBodyCleanLines, bodyHasTypoLines } from "$lib/no
         {vaultPath}
         {dirty}
         {saving}
-        {preview}
         ollamaAvailable={ollamaStatus.available}
         {aiLoading}
         companionOpen={companionOpen}
         onChange={handleContentChange}
         onSave={() => selectedPath && persistNote(selectedPath, content)}
-        onTogglePreview={() => (preview = !preview)}
         onAiAction={handleAiAction}
         onInsertImage={handleInsertImage}
         onImportImages={importImagesFromPaths}
         onPasteImageBytes={importPastedImage}
         onExport={handleExport}
         onToggleCompanion={toggleCompanion}
-        onSelectionChange={(sel) => (editorSelection = sel)}
+        onSelectionChange={(sel) => {
+          editorSelection = sel;
+          if (sel) lastCaretOffset = sel.end;
+        }}
+        onCaretChange={(offset) => {
+          lastCaretOffset = offset;
+        }}
         onEditingIdle={handleEditingIdle}
         onAutoTypoFix={handleAutoTypoFix}
         {autoTypoFixEnabled}
         highlightRange={editorHighlight}
         {editorCursor}
         onCursorRestored={() => (editorCursor = null)}
+        onOpenWikilink={handleOpenWikilink}
+        insertImageMarkdown={pendingImageMarkdown}
+        onImageMarkdownConsumed={() => (pendingImageMarkdown = null)}
       />
     {:else}
       <section class="flex flex-1 flex-col items-center justify-center gap-4 bg-bg text-center">
-        <span class="pixel-icon text-4xl">📓</span>
+        <PixelIcon name="note" size={24} class="text-accent-lavender" />
         <div>
           <h2 class="text-xl font-semibold">Sélectionnez ou créez une note</h2>
           <p class="mt-1 text-sm text-text-muted">
@@ -1166,16 +1610,18 @@ import { scanBodyTypoLines, scanBodyCleanLines, bodyHasTypoLines } from "$lib/no
   onToggleRecord={handleVoiceToggle}
   {noteContext}
   notePath={selectedPath}
-  suggestions={aiSuggestions}
+  suggestions={aiSuggestions.filter((s) => !s.notePath || s.notePath === selectedPath)}
   {aiLoading}
   {proactiveLoading}
   {proactiveEnabled}
   {autoTypoFixEnabled}
+  {autoSummarizeEnabled}
   {proactiveStatus}
   customTargetLabel={customPromptTargetLabel}
   onContextChange={handleNoteContextChange}
   onProactiveToggle={handleProactiveToggle}
   onAutoTypoToggle={handleAutoTypoToggle}
+  onAutoSummarizeToggle={handleAutoSummarizeToggle}
   onCustomPrompt={handleCustomPrompt}
   onApply={applySuggestion}
   onDismiss={dismissSuggestion}

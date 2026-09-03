@@ -38,6 +38,9 @@ const REPLACEMENTS: { pattern: RegExp; replace: string }[] = [
   { pattern: /\b(je|tu)\s+v[èeé]\s+essay/gi, replace: "$1'ai essayé" },
   { pattern: /\b(je|tu)\s+va\s+essay/gi, replace: "$1'ai essayé" },
   { pattern: /\btitro\b/gi, replace: "titre" },
+  { pattern: /\bpeure\b/gi, replace: "peur" },
+  { pattern: /\bprenn\b/gi, replace: "prenne" },
+  { pattern: /\bglan\b/gi, replace: "gland" },
   { pattern: /\bapart\b/gi, replace: "à part" },
   { pattern: /\bmalgrés\b/gi, replace: "malgré" },
   { pattern: /\bdefaut\b/gi, replace: "défaut" },
@@ -71,10 +74,6 @@ export function applyLocalCorrections(text: string): string {
   out = out.replace(/\s+\b(bijour|bjour|bonjou)\s*([.!?…])?\s*$/gi, "$2");
   out = out.replace(/\s{2,}/g, " ").trimEnd();
   return out;
-}
-
-export function hasLocalCorrection(text: string): boolean {
-  return applyLocalCorrections(text) !== text;
 }
 
 /** Fusionne la réponse IA et les corrections locales fiables. */

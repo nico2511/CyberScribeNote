@@ -30,6 +30,7 @@
     proactiveLoading: boolean;
     proactiveEnabled: boolean;
     autoTypoFixEnabled: boolean;
+    autoSummarizeEnabled: boolean;
     proactiveStatus?: string;
     customTargetLabel?: string;
     notePath?: string | null;
@@ -37,6 +38,7 @@
     onContextChange: (value: string) => void;
     onProactiveToggle: (enabled: boolean) => void;
     onAutoTypoToggle: (enabled: boolean) => void;
+    onAutoSummarizeToggle: (enabled: boolean) => void;
     onCustomPrompt: (prompt: string) => void;
     onApply: (id: string) => void;
     onDismiss: (id: string) => void;
@@ -53,6 +55,7 @@
     proactiveLoading,
     proactiveEnabled,
     autoTypoFixEnabled,
+    autoSummarizeEnabled,
     proactiveStatus = "",
     customTargetLabel = "note entière",
     notePath = null,
@@ -60,6 +63,7 @@
     onContextChange,
     onProactiveToggle,
     onAutoTypoToggle,
+    onAutoSummarizeToggle,
     onCustomPrompt,
     onApply,
     onDismiss,
@@ -84,6 +88,7 @@
     if (voiceStatus.recording) return "Enregistrement…";
     if (voiceStatus.transcribing) return "Transcription…";
     if (voiceStatus.modelLoading) return "Chargement…";
+    if (!voiceStatus.modelLoaded) return "Modèle non chargé";
     return "Dictée prête";
   });
 
@@ -194,8 +199,10 @@
       onpointercancel={onHeaderPointerUp}
     >
       <div class="min-w-0 pr-2">
-        <h3 class="text-sm font-semibold">◈ Compagnon IA</h3>
-        <p class="text-[10px] text-text-muted">Dictée · corrections · prompt · suggestions</p>
+        <h3 class="flex items-center gap-1.5 text-sm font-semibold">
+          <span class="inline-flex text-accent-lavender">◈</span> Compagnon IA
+        </h3>
+        <p class="text-[10px] text-text-muted">PTT · corrections · prompt · suggestions</p>
       </div>
       <div class="flex shrink-0 items-center gap-1">
         <div
@@ -361,7 +368,18 @@
           onchange={(e) => onProactiveToggle(e.currentTarget.checked)}
         />
         <span>
-          <strong class="text-text">Suggestions contextuelles</strong> — reformulation / idées (pause ~4 s)
+          <strong class="text-text">Suggestions contextuelles</strong> — corrections orthographiques seulement (opt-in, jamais de reformulation auto)
+        </span>
+      </label>
+      <label class="mt-2 flex cursor-pointer items-start gap-2 text-[11px] text-text-muted">
+        <input
+          type="checkbox"
+          class="mt-0.5"
+          checked={autoSummarizeEnabled}
+          onchange={(e) => onAutoSummarizeToggle(e.currentTarget.checked)}
+        />
+        <span>
+          <strong class="text-text">Résumé automatique</strong> — suggestion d'ajout en fin de note après inactivité (~40 s)
         </span>
       </label>
     </section>
@@ -403,7 +421,14 @@
           {#if s.reason}
             <p class="mb-1.5 text-[10px] leading-snug text-text-muted italic">{s.reason}</p>
           {/if}
-          {#if s.proposedText.trim() || s.originalText.trim()}
+          {#if s.applyMode === "append" || s.action === "summarize"}
+            <div class="mb-2 rounded-lg border border-accent-mint/40 bg-accent-mint/10 px-2 py-1.5">
+              <p class="mb-1 text-[9px] font-semibold uppercase tracking-wide text-accent-mint">
+                À ajouter en fin de note
+              </p>
+              <pre class="whitespace-pre-wrap font-sans text-[11px] leading-relaxed text-text">{s.proposedText}</pre>
+            </div>
+          {:else if s.proposedText.trim() || s.originalText.trim()}
             <SuggestionDiff originalText={s.originalText} proposedText={s.proposedText} />
           {:else}
             <p class="mb-2 text-[10px] text-danger">Proposition vide — relancez ou ignorez.</p>
@@ -415,7 +440,7 @@
               disabled={!s.proposedText.trim()}
               onclick={() => onApply(s.id)}
             >
-              Appliquer
+              {s.applyMode === "append" || s.action === "summarize" ? "Ajouter en fin" : "Appliquer"}
             </button>
             <button
               type="button"

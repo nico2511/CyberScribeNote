@@ -231,11 +231,6 @@ pub fn init_vault() -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn get_vault_path() -> Result<String, String> {
-    Ok(vault_root()?.to_string_lossy().to_string())
-}
-
-#[tauri::command]
 pub fn list_vault() -> Result<Vec<VaultEntry>, String> {
     let root = ensure_vault()?;
     read_dir_recursive(&root, &root)
@@ -449,15 +444,6 @@ pub fn import_image_bytes(
         note_path.as_deref(),
         use_global_media.unwrap_or(false),
     )
-}
-
-#[tauri::command]
-pub fn resolve_vault_file(relative_path: String) -> Result<String, String> {
-    let path = resolve_path(&relative_path)?;
-    if !path.is_file() {
-        return Err("Fichier introuvable dans le vault".into());
-    }
-    Ok(path.to_string_lossy().to_string())
 }
 
 fn extract_title(content: &str, fallback: &str) -> String {

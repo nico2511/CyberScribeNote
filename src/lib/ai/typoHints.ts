@@ -121,6 +121,9 @@ const INVALID_WORDS = new Set([
 const KNOWN_MISSPELLINGS: Record<string, string> = {
   beuf: "boeuf",
   partle: "parle",
+  peure: "peur",
+  prenn: "prenne",
+  glan: "gland",
   bijour: "",
   bjour: "",
   bonjou: "bonjour",

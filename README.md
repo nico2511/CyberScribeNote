@@ -4,21 +4,21 @@ Application de prise de notes **100 % locale**, offline-first, avec IA via [Olla
 
 Basé sur le plan [CyberScribe Notes](Docs/CyberScribe_Notes_Plan.md) et inspiré de [CyberScribe](https://github.com/nico2511/CyberScribe) pour la partie vocale.
 
-## Fonctionnalités (v0.2.0)
+## Fonctionnalités (v0.2.x)
 
 - Vault Markdown dans `Documents/CyberScribeNote/vault`
 - Arborescence dossiers / notes — création, suppression, **glisser-déposer** pour classer
-- Éditeur Markdown avec aperçu, barre d'outils et sauvegarde automatique
-- Thèmes **Light Pastel** et **Dark Pastel**
+- **Éditeur TipTap WYSIWYG** (Markdown sérialisé) + outline / TOC, wikilinks `[[Note]]`
+- Thèmes **Light Pastel** et **Dark Pastel** + icônes pixel 16×16
 - Recherche rapide **Ctrl+T**
 - **Compagnon IA** : suggestions proactives et manuelles (appliquer / ignorer) avec contexte de note
 - Correction typo locale automatique + diff des suggestions
-- Aperçu Markdown avec redimensionnement d'images (S / M / L / 100 %)
 - Résumé, reformulation, correction et traduction via Ollama
-- Panneau **Réglages** (Ctrl+,) : Ollama, voix, modèles Whisper
-- Images copiées localement (`_media/` par note)
-- **Dictée vocale** (CyberScribe) : touche configurable, worker Python sans fenêtre console
-- Commandes vocales : « Scribe, … »
+- **Résumé automatique** opt-in (idle / changement de note)
+- Panneau **Réglages** (Ctrl+,) : Ollama, voix PTT, modèles Whisper
+- Images à la position du curseur (`_media/` par note) + redimensionnement
+- **Dictée vocale push-to-talk** (hotkey configurable) : worker Python sans fenêtre console
+- Commandes vocales : « Scribe, ouvre / cherche / résume / … »
 - Export d'une note en `.md`
 
 ## Prérequis
@@ -58,9 +58,9 @@ Sortie unique : `src-tauri/target/release/cyberscribe-note.exe` (pas d'installat
 | Couche | Technologie |
 |--------|-------------|
 | Desktop | Tauri 2 |
-| Frontend | Svelte 5 + TypeScript + Tailwind CSS 4 |
+| Frontend | Svelte 5 + TypeScript + Tailwind CSS 4 + TipTap |
 | Backend | Rust (FS vault, Ollama HTTP) |
-| Voix | Python sidecar (faster-whisper) |
+| Voix | Python sidecar (faster-whisper), push-to-talk |
 | Stockage | Fichiers `.md` + médias locaux |
 
 ## Roadmap

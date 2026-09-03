@@ -1,5 +1,6 @@
 const PROACTIVE_KEY = "csn-companion-proactive";
 const AUTO_TYPO_KEY = "csn-companion-auto-typo";
+const AUTO_SUMMARY_KEY = "csn-companion-auto-summary";
 const PANEL_POS_KEY = "csn-companion-panel-pos";
 const PANEL_SIZE_KEY = "csn-companion-panel-size";
 const CUSTOM_PROMPT_KEY = "csn-companion-custom-prompt";
@@ -21,9 +22,10 @@ export const COMPANION_SIZE_PRESETS: Record<
 };
 
 export function loadProactiveEnabled(): boolean {
-  if (typeof localStorage === "undefined") return true;
+  if (typeof localStorage === "undefined") return false;
+  // Opt-in : la reformulation auto changeait trop souvent le sens du texte
   const raw = localStorage.getItem(PROACTIVE_KEY);
-  return raw === null ? true : raw === "1";
+  return raw === "1";
 }
 
 export function saveProactiveEnabled(enabled: boolean) {
@@ -39,6 +41,16 @@ export function loadAutoTypoFixEnabled(): boolean {
 
 export function saveAutoTypoFixEnabled(enabled: boolean) {
   localStorage.setItem(AUTO_TYPO_KEY, enabled ? "1" : "0");
+}
+
+/** Résumé automatique opt-in (idle / changement de note). */
+export function loadAutoSummarizeEnabled(): boolean {
+  if (typeof localStorage === "undefined") return false;
+  return localStorage.getItem(AUTO_SUMMARY_KEY) === "1";
+}
+
+export function saveAutoSummarizeEnabled(enabled: boolean) {
+  localStorage.setItem(AUTO_SUMMARY_KEY, enabled ? "1" : "0");
 }
 
 export function loadCompanionPanelPos(): CompanionPanelPos | null {
