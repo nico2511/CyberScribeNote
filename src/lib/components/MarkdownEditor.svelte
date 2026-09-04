@@ -23,7 +23,7 @@
   import type { OutlineItem } from "$lib/markdown/outline";
   import { editingTargetAtCursor, lineAtCursor } from "$lib/note/paragraph";
   import type { ParagraphSpan } from "$lib/note/paragraph";
-  import { parseFrontmatterMeta, setFrontmatterTags } from "$lib/note/frontmatter";
+  import { parseFrontmatterMeta, setFrontmatterTags, noteBody } from "$lib/note/frontmatter";
   import { ResizableImage } from "$lib/tiptap/resizableImage";
   import { WikiLink } from "$lib/tiptap/wikiLink";
   import { resolveMediaUrl } from "$lib/vault/media";
@@ -237,7 +237,7 @@
   /** Insère la dictée à la position TipTap réelle (pas via offsets markdown approximatifs). */
   function insertDictationFragment(raw: string) {
     if (!editor) return;
-    const trimmed = raw.trim();
+    let trimmed = raw.trim();
     if (!trimmed) return;
 
     const { from } = editor.state.selection;
@@ -247,7 +247,20 @@
     const after =
       from < docSize ? editor.state.doc.textBetween(from, Math.min(docSize, from + 1), "", "") : "";
 
+    // Évite « .. » si Whisper finit par un point et qu'il y en a déjà un après le caret
+    if (after && /^[.,;:!?…]/.test(after) && /[.,;:!?…]$/.test(trimmed)) {
+      trimmed = trimmed.replace(/[.,;:!?…]+$/u, "");
+    }
+
     let text = trimmed;
+    if (!text) {
+      if (after && /^[.,;:!?…]/.test(after)) {
+        editor.chain().focus().setTextSelection(from + 1).run();
+        onCaretChange?.(cursorMdOffset());
+      }
+      return;
+    }
+
     if (before && !/\s$/.test(before) && !/^[,.;:!?…]/.test(text)) {
       text = ` ${text}`;
     }
@@ -256,7 +269,31 @@
     }
 
     applyingExternal = true;
-    editor.chain().focus().insertContent(text).run();
+    // insertText place le caret APRES le texte (insertContent peut le laisser avant le « . »)
+    editor
+      .chain()
+      .focus()
+      .command(({ tr, state, dispatch }) => {
+        const pos = state.selection.from;
+        if (dispatch) {
+          tr.insertText(text, pos);
+          dispatch(tr);
+        }
+        return true;
+      })
+      .run();
+
+    // Si on est encore juste avant un point (n-1), avancer d'un cran
+    const pos = editor.state.selection.from;
+    const size = editor.state.doc.content.size;
+    const nextCh =
+      pos < size ? editor.state.doc.textBetween(pos, Math.min(size, pos + 1), "", "") : "";
+    const prevCh =
+      pos > 1 ? editor.state.doc.textBetween(Math.max(0, pos - 1), pos, "", "") : "";
+    if (nextCh && /^[.,;:!?…]/.test(nextCh) && prevCh && /[\p{L}\d]/u.test(prevCh)) {
+      editor.commands.setTextSelection(pos + nextCh.length);
+    }
+
     applyingExternal = false;
     emitChange();
     onCaretChange?.(cursorMdOffset());
@@ -692,7 +729,11 @@
     if (!editor) return;
 
     if (md !== lastEmitted) {
-      // Prefer explicit caret from parent (auto-typo / dictée), sinon caret courant
+      // Autosave qui ne touche que le YAML : ne pas remonter le doc (casse le caret / point)
+      if (cursor == null && noteBody(md) === noteBody(lastEmitted)) {
+        lastEmitted = md;
+        return;
+      }
       setEditorFromMarkdown(md, cursor);
       if (cursor != null) {
         onCursorRestored?.();

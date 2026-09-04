@@ -634,8 +634,8 @@
       savedContent = stamped;
       dirty = false;
       if (selectedPath === path && stamped !== content) {
+        // Frontmatter only → update content without forcing caret remap
         content = stamped;
-        editorCursor = lastCaretOffset;
       }
     } finally {
       saving = false;
