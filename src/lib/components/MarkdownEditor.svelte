@@ -57,6 +57,9 @@
     onOpenWikilink?: (title: string) => void;
     insertImageMarkdown?: string | null;
     onImageMarkdownConsumed?: () => void;
+    /** Texte de dictée à insérer au caret TipTap courant (évite les offsets markdown décalés). */
+    dictationInsert?: { text: string; id: number } | null;
+    onDictationConsumed?: () => void;
   }
 
   let {
@@ -88,6 +91,8 @@
     onOpenWikilink,
     insertImageMarkdown = null,
     onImageMarkdownConsumed,
+    dictationInsert = null,
+    onDictationConsumed,
   }: Props = $props();
 
   let editorHost = $state<HTMLDivElement | null>(null);
@@ -152,7 +157,7 @@
     let bestDelta = Number.POSITIVE_INFINITY;
     const step = Math.max(1, Math.floor(maxPos / 400));
     for (let pos = 1; pos <= maxPos; pos += step) {
-      const len = doc.textBetween(0, pos, "\n", "\n").length;
+      const len = doc.textBetween(0, pos, "\n\n", "\n").length;
       const delta = Math.abs(len - bodyOffset);
       if (delta < bestDelta) {
         bestDelta = delta;
@@ -164,7 +169,7 @@
     const lo = Math.max(1, best - step);
     const hi = Math.min(maxPos, best + step);
     for (let pos = lo; pos <= hi; pos++) {
-      const len = doc.textBetween(0, pos, "\n", "\n").length;
+      const len = doc.textBetween(0, pos, "\n\n", "\n").length;
       const delta = Math.abs(len - bodyOffset);
       if (delta < bestDelta) {
         bestDelta = delta;
@@ -216,13 +221,45 @@
       while (s < md.length && md[s] === "\n") s++;
       return s;
     })();
-    const textBefore = editor.state.doc.textBetween(0, pos, "\n", "\n");
     const body = md.slice(bodyStart);
-    // Search for the textBefore substring in the body for precise mapping
-    const idx = body.indexOf(textBefore);
+    // Séparateur de blocs aligné sur le Markdown (paragraphes = \n\n)
+    const textBefore = editor.state.doc.textBetween(0, pos, "\n\n", "\n");
+    if (!textBefore) return bodyStart;
+
+    // Préférer la dernière occurrence du préfixe (évite de retomber sur un doublon plus haut)
+    const idx = body.lastIndexOf(textBefore);
     if (idx >= 0) return bodyStart + idx + textBefore.length;
-    // Fallback: approximate by length
+
+    // Fallback longueur (souvent off-by-n sur les newlines, mais stable)
     return bodyStart + Math.min(body.length, textBefore.length);
+  }
+
+  /** Insère la dictée à la position TipTap réelle (pas via offsets markdown approximatifs). */
+  function insertDictationFragment(raw: string) {
+    if (!editor) return;
+    const trimmed = raw.trim();
+    if (!trimmed) return;
+
+    const { from } = editor.state.selection;
+    const docSize = editor.state.doc.content.size;
+    const before =
+      from > 1 ? editor.state.doc.textBetween(Math.max(0, from - 1), from, "", "") : "";
+    const after =
+      from < docSize ? editor.state.doc.textBetween(from, Math.min(docSize, from + 1), "", "") : "";
+
+    let text = trimmed;
+    if (before && !/\s$/.test(before) && !/^[,.;:!?…]/.test(text)) {
+      text = ` ${text}`;
+    }
+    if (after && !/^\s/.test(after) && !/\s$/.test(text) && !/^[.,;:!?…]/.test(after)) {
+      text = `${text} `;
+    }
+
+    applyingExternal = true;
+    editor.chain().focus().insertContent(text).run();
+    applyingExternal = false;
+    emitChange();
+    onCaretChange?.(cursorMdOffset());
   }
 
   function cursorMdOffset(): number {
@@ -310,17 +347,26 @@
 
   function toggleAiMenu(e: MouseEvent) {
     e.stopPropagation();
-    readSelectionFromEditor();
+    if (!aiMenuOpen) {
+      // Figer la sélection AVANT les clics du menu (sinon TipTap la perd)
+      readSelectionFromEditor();
+      selectionPinned = !!selection;
+    } else {
+      selectionPinned = false;
+    }
     aiMenuOpen = !aiMenuOpen;
+    if (!aiMenuOpen) translateMenuOpen = false;
   }
 
   function runAi(e: MouseEvent, action: AiAction, translateTo?: TranslateLang) {
     e.stopPropagation();
+    const targetSel = selection;
     aiMenuOpen = false;
     translateMenuOpen = false;
-    readSelectionFromEditor();
-    onAiAction({ action, selection: selection ?? undefined, translateTo });
+    selectionPinned = false;
+    onAiAction({ action, selection: targetSel ?? undefined, translateTo });
     selection = null;
+    onSelectionChange?.(null);
   }
 
   function handleWindowClick(e: MouseEvent) {
@@ -682,6 +728,15 @@
       insertImageAtCursor(m[2], m[1].replace(/\|w:.*$/, "") || "image");
     }
     onImageMarkdownConsumed?.();
+  });
+
+  $effect(() => {
+    const payload = dictationInsert;
+    if (!payload?.text || !editor) return;
+    // dépend de payload.id pour ré-insérer un même texte
+    void payload.id;
+    insertDictationFragment(payload.text);
+    onDictationConsumed?.();
   });
 </script>
 

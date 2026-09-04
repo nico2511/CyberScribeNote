@@ -29,7 +29,7 @@
   import { scanBodyTypoLines, bodyHasTypoLines } from "$lib/note/scanTypos";
   import { parseVoiceTranscript } from "$lib/voice/keywords";
   import { replaceTextRange, type AiActionRequest, type TextSelection } from "$lib/voice/commands";
-  import { mapCaretThroughReplace } from "$lib/note/caret";
+  import { mapCaretThroughReplace, locateSelectionInContent } from "$lib/note/caret";
   import { resolveWikilink } from "$lib/vault/wikilinks";
   import {
     extractExistingSummary,
@@ -88,6 +88,7 @@
   /** Dernière position curseur connue (pour insérer la dictée au bon endroit). */
   let lastCaretOffset = 0;
   let pendingImageMarkdown = $state<string | null>(null);
+  let pendingDictation = $state<{ text: string; id: number } | null>(null);
   let autoTypoNoticeTimer: ReturnType<typeof setTimeout> | null = null;
   let autoTypoFixBusy = false;
   let proactiveStatus = $state("");
@@ -392,19 +393,8 @@
   function appendTranscript(fragment: string) {
     const raw = fragment.trim();
     if (!raw) return;
-    const pos = Math.max(0, Math.min(lastCaretOffset, content.length));
-    const before = content.slice(0, pos);
-    const after = content.slice(pos);
-    const needLead =
-      before.length > 0 && !/\s$/.test(before) && !/^[,.;:!?]/.test(raw);
-    const needTrail = after.length > 0 && !/^\s/.test(after) && !/\s$/.test(raw);
-    const inserted = `${needLead ? " " : ""}${raw}${needTrail ? " " : ""}`;
-    const next = before + inserted + after;
-    lastCaretOffset = pos + inserted.length;
-    editorCursor = lastCaretOffset;
-    handleContentChange(next);
-    // Ne pas lancer la correction auto immédiatement : Whisper + Ollama en même temps
-    // peut tuer le worker Python (mémoire). On attend que la dictée soit stable.
+    // Insertion via TipTap au caret réel (évite le décalage markdown n-1 / avant le point)
+    pendingDictation = { text: raw, id: Date.now() };
     if (autoTypoFixEnabled) {
       silenceAiHelpers(8000);
       setTimeout(() => {
@@ -820,7 +810,21 @@
   }
 
   async function handleAiAction(request: AiActionRequest) {
-    const { action, selection: sel, translateTo } = request;
+    const { action, selection: rawSel, translateTo } = request;
+    const located = rawSel ? locateSelectionInContent(content, rawSel) : null;
+    const sel = rawSel && located
+      ? { ...rawSel, start: located.start, end: located.end }
+      : rawSel && rawSel.text
+        ? rawSel
+        : undefined;
+    // Si une sélection était demandée mais introuvable → ne pas traduire toute la note par erreur
+    if (rawSel?.text && !located && (action === "translate" || action === "reformulate" || action === "correct")) {
+      const msg =
+        "Sélection introuvable dans la note — resélectionnez le passage puis relancez l'action.";
+      statusMessage = msg;
+      notify({ kind: "warning", title: "Sélection", message: msg, key: "ai-sel" });
+      return;
+    }
     const fullNote = !sel;
     const targetText = sel?.text ?? noteBody(content);
     if (!targetText.trim()) {
@@ -949,12 +953,23 @@
 
       // Traduction sélection : appliquer tout de suite + silence des helpers auto
       if (!isSummary && action === "translate" && sel) {
-        const next = replaceTextRange(content, sel.start, sel.end, proposal);
+        const range = locateSelectionInContent(content, sel) ?? {
+          start: sel.start,
+          end: sel.end,
+        };
+        const next = replaceTextRange(content, range.start, range.end, proposal);
         silenceAiHelpers(120000);
         handleContentChange(next);
-        editorCursor = sel.start + proposal.length;
+        editorCursor = range.start + proposal.length;
+        lastCaretOffset = range.start + proposal.length;
         companionOpen = true;
-        statusMessage = `${labels[action]} appliquée.`;
+        statusMessage = `${labels[action]} appliquée à la sélection.`;
+        notify({
+          kind: "success",
+          title: "Traduction",
+          message: `Sélection traduite (${proposal.length} car.)`,
+          key: "ai-translate",
+        });
         return;
       }
 
@@ -1675,6 +1690,8 @@
         onOpenWikilink={handleOpenWikilink}
         insertImageMarkdown={pendingImageMarkdown}
         onImageMarkdownConsumed={() => (pendingImageMarkdown = null)}
+        dictationInsert={pendingDictation}
+        onDictationConsumed={() => (pendingDictation = null)}
       />
     {:else}
       <section class="flex flex-1 flex-col items-center justify-center gap-4 bg-bg text-center">
