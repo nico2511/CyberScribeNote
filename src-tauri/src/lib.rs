@@ -12,10 +12,23 @@ use commands::{
 };
 
 use std::sync::{Arc, Mutex};
+use tauri::{Manager, WindowEvent};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_focus();
+                let _ = window.unminimize();
+            }
+        }));
+    }
+
+    builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -25,6 +38,18 @@ pub fn run() {
                 eprintln!("Voice setup: {e}");
             }
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if matches!(
+                event,
+                WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed
+            ) {
+                if let Some(state) = window.try_state::<Arc<Mutex<VoiceState>>>() {
+                    if let Ok(mut guard) = state.lock() {
+                        guard.stop_worker();
+                    }
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             init_vault,

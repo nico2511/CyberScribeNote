@@ -42,7 +42,7 @@ export function notify(input: ToastInput): string {
   const key = input.key ?? `${input.kind}:${input.title}:${input.message ?? ""}`;
   const existing = toasts.find((t) => t.key === key);
   if (existing) {
-    return existing.id;
+    toasts = toasts.filter((t) => t.id !== existing.id);
   }
 
   const id = crypto.randomUUID();

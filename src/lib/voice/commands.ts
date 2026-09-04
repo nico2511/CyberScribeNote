@@ -51,7 +51,7 @@ export const VOICE_COMMANDS: VoiceCommandInfo[] = [
   },
   {
     phrase: "(dictée libre)",
-    description: "Pendant le PTT : transcrit et insère dans la note active",
+    description: "Pendant le PTT : transcrit et insère dans la note active (parler puis rappuyer)",
     category: "dictée",
     requiresNote: true,
   },

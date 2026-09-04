@@ -104,12 +104,32 @@
     ragBusy = true;
     error = "";
     message = "Indexation RAG en cours (embeddings)…";
+    notify({
+      kind: "info",
+      title: "RAG",
+      message: "Indexation en cours (nomic-embed-text)…",
+      key: "rag",
+      durationMs: 0,
+    });
     try {
       ragStatus = await invoke<RagStatus>("rag_reindex");
       message = `Index RAG prêt — ${ragStatus.chunkCount} extraits · ${ragStatus.noteCount} notes.`;
+      notify({
+        kind: "success",
+        title: "RAG indexé",
+        message,
+        key: "rag",
+      });
     } catch (e) {
       error = String(e);
       message = "";
+      notify({
+        kind: "error",
+        title: "RAG échoué",
+        message: error,
+        key: "rag",
+        durationMs: 16000,
+      });
     } finally {
       ragBusy = false;
     }

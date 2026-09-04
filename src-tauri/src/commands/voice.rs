@@ -93,6 +93,9 @@ pub struct VoiceState {
     stdin: Option<ChildStdin>,
     status: VoiceStatus,
     generation: u64,
+    recent_stderr: Vec<String>,
+    last_pong: Option<Instant>,
+    heartbeat_started: bool,
 }
 
 impl Default for VoiceState {
@@ -111,6 +114,9 @@ impl Default for VoiceState {
                 error: None,
             },
             generation: 0,
+            recent_stderr: Vec::new(),
+            last_pong: None,
+            heartbeat_started: false,
         }
     }
 }
@@ -164,14 +170,25 @@ impl VoiceState {
     }
 
     fn find_python() -> Option<String> {
-        for candidate in ["py", "python", "python3"] {
-            let mut cmd = hidden_command(candidate);
+        // Préférer le vrai python.exe (pas le lanceur `py`) pour un sidecar stable.
+        for candidate in ["python", "python3", "py"] {
+            let mut probe = hidden_command(candidate);
             if candidate == "py" {
-                cmd.arg("-3");
+                probe.args(["-3", "-c", "import sys; print(sys.executable)"]);
+            } else {
+                probe.args(["-c", "import sys; print(sys.executable)"]);
             }
-            cmd.arg("--version");
-            if cmd.output().map(|o| o.status.success()).unwrap_or(false) {
-                return Some(candidate.to_string());
+            if let Ok(output) = probe.output() {
+                if output.status.success() {
+                    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    if !path.is_empty() && Path::new(&path).exists() {
+                        return Some(path);
+                    }
+                    // Fallback: commande brute si le chemin n'est pas résolu
+                    if candidate != "py" {
+                        return Some(candidate.to_string());
+                    }
+                }
             }
         }
         None
@@ -193,9 +210,6 @@ impl VoiceState {
         };
 
         let mut cmd = hidden_command(&python);
-        if python == "py" {
-            cmd.arg("-3");
-        }
         let check = cmd
             .arg("-c")
             .arg("import pyaudio, faster_whisper")
@@ -264,6 +278,7 @@ impl VoiceState {
         self.status.transcribing = false;
         self.status.model_loading = false;
         self.status.model_loaded = false;
+        self.last_pong = None;
     }
 
     fn send_cmd(&mut self, payload: serde_json::Value) -> Result<(), String> {
@@ -311,17 +326,21 @@ impl VoiceState {
         let python = Self::find_python().ok_or("Python introuvable")?;
 
         let mut cmd = hidden_command(&python);
-        if python == "py" {
-            cmd.arg("-3");
-        }
-        cmd.arg("-u").arg(&script)
+        // python_path is already the absolute executable — no `py -3`
+        cmd.arg("-u")
+            .arg(&script)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
+        // Force UTF-8 + unbuffered for Windows hidden console
+        cmd.env("PYTHONUTF8", "1");
+        cmd.env("PYTHONIOENCODING", "utf-8");
+        cmd.env("PYTHONUNBUFFERED", "1");
+
         let mut child = cmd
             .spawn()
-            .map_err(|e| format!("Impossible de lancer le worker : {e}"))?;
+            .map_err(|e| format!("Impossible de lancer le worker ({python}) : {e}"))?;
         let stdin = child.stdin.take().ok_or("stdin worker indisponible")?;
         let stdout = child.stdout.take().ok_or("stdout worker indisponible")?;
         let stderr = child.stderr.take();
@@ -329,11 +348,13 @@ impl VoiceState {
         let generation = self.generation;
         self.stdin = Some(stdin);
         self.child = Some(child);
+        self.recent_stderr.clear();
         self.status.running = true;
         self.status.model_loaded = false;
         self.status.model_loading = false;
         self.status.hotkey = voice.voice_hotkey.clone();
         self.status.error = None;
+        self.last_pong = Some(Instant::now());
 
         let app_handle = app.clone();
         std::thread::spawn(move || {
@@ -343,25 +364,45 @@ impl VoiceState {
                     handle_worker_event(&app_handle, json);
                 }
             }
-            let unexpected = if let Some(state) = app_handle.try_state::<Arc<Mutex<VoiceState>>>() {
+
+            // Récupère le code de sortie + stderr pour diagnostiquer le crash
+            if let Some(state) = app_handle.try_state::<Arc<Mutex<VoiceState>>>() {
                 if let Ok(mut guard) = state.lock() {
-                    if guard.generation != generation {
-                        false
-                    } else {
+                    if guard.generation == generation {
+                        let mut exit_code: Option<i32> = None;
+                        if let Some(mut child) = guard.child.take() {
+                            if let Ok(status) = child.wait() {
+                                exit_code = status.code();
+                            }
+                        }
+                        let stderr_tail = guard.recent_stderr.join(" | ");
+                        guard.stdin = None;
                         guard.mark_worker_stopped();
-                        guard.status.error = Some(
-                            "Worker vocal arrêté inopinément.".into(),
+                        let detail = match exit_code {
+                            Some(code) if !stderr_tail.is_empty() => {
+                                format!("Worker vocal planté (code {code}) : {stderr_tail}")
+                            }
+                            Some(code) => format!(
+                                "Worker vocal planté (code {code}). Voir Documents/CyberScribeNote/voice_worker.log"
+                            ),
+                            None if !stderr_tail.is_empty() => {
+                                format!("Worker vocal arrêté : {stderr_tail}")
+                            }
+                            None => {
+                                "Worker vocal arrêté inopinément. Voir Documents/CyberScribeNote/voice_worker.log"
+                                    .into()
+                            }
+                        };
+                        guard.status.error = Some(detail.clone());
+                        let _ = app_handle.emit(
+                            "voice-worker-stopped",
+                            serde_json::json!({
+                                "exitCode": exit_code,
+                                "message": detail,
+                            }),
                         );
-                        true
                     }
-                } else {
-                    false
                 }
-            } else {
-                false
-            };
-            if unexpected {
-                let _ = app_handle.emit("voice-worker-stopped", ());
             }
         });
 
@@ -370,9 +411,18 @@ impl VoiceState {
             std::thread::spawn(move || {
                 let reader = BufReader::new(stderr);
                 for line in reader.lines().map_while(Result::ok) {
-                    let trimmed = line.trim();
+                    let trimmed = line.trim().to_string();
                     if trimmed.is_empty() {
                         continue;
+                    }
+                    if let Some(state) = app_handle.try_state::<Arc<Mutex<VoiceState>>>() {
+                        if let Ok(mut guard) = state.lock() {
+                            guard.recent_stderr.push(trimmed.clone());
+                            if guard.recent_stderr.len() > 12 {
+                                let overflow = guard.recent_stderr.len() - 12;
+                                guard.recent_stderr.drain(0..overflow);
+                            }
+                        }
                     }
                     let _ = app_handle.emit(
                         "voice-event",
@@ -385,7 +435,41 @@ impl VoiceState {
             });
         }
 
-        self.init_worker(voice)
+        self.init_worker(voice)?;
+        self.ensure_heartbeat(app);
+        Ok(())
+    }
+
+    fn ensure_heartbeat(&mut self, app: &AppHandle) {
+        if self.heartbeat_started {
+            return;
+        }
+        self.heartbeat_started = true;
+        let app_handle = app.clone();
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_secs(20));
+            let Some(state) = app_handle.try_state::<Arc<Mutex<VoiceState>>>() else {
+                break;
+            };
+            let Ok(mut guard) = state.lock() else {
+                continue;
+            };
+            if !guard.status.running || !guard.is_worker_alive() {
+                continue;
+            }
+            // Timeout heartbeat : worker ne répond plus
+            if let Some(last) = guard.last_pong {
+                if last.elapsed() > Duration::from_secs(60) {
+                    let msg = "Worker vocal sans réponse (heartbeat). Réglages → Voix → Appliquer.".to_string();
+                    guard.status.error = Some(msg.clone());
+                    let _ = app_handle.emit(
+                        "voice-event",
+                        serde_json::json!({ "type": "error", "message": msg }),
+                    );
+                }
+            }
+            let _ = guard.send_cmd(serde_json::json!({ "cmd": "ping" }));
+        });
     }
 
     fn init_worker(&mut self, voice: &VoiceConfig) -> Result<(), String> {
@@ -513,6 +597,9 @@ fn handle_worker_event(app: &AppHandle, json: serde_json::Value) {
                 "deps" => {
                     guard.status.deps_ok =
                         json.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+                }
+                "pong" | "ready" => {
+                    guard.last_pong = Some(Instant::now());
                 }
                 "error" => {
                     // Les messages "transcription en cours" ne sont pas fatals
@@ -665,9 +752,6 @@ pub fn voice_install_deps(app: AppHandle) -> Result<String, String> {
     }
 
     let mut cmd = hidden_command(&python);
-    if python == "py" {
-        cmd.arg("-3");
-    }
     let output = cmd
         .args(["-m", "pip", "install", "-r"])
         .arg(&req_file)

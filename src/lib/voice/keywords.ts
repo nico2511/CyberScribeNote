@@ -23,7 +23,25 @@ export interface VoiceInsert {
   text: string;
 }
 
-export type ParsedVoice = VoiceCommand | VoiceSearch | VoiceOpen | VoiceInsert;
+/** Wake word entendu, mais verbe inconnu — ne pas insérer dans la note. */
+export interface VoiceUnknown {
+  kind: "unknown";
+  text: string;
+}
+
+export type ParsedVoice =
+  | VoiceCommand
+  | VoiceSearch
+  | VoiceOpen
+  | VoiceInsert
+  | VoiceUnknown;
+
+const FILLER_RE =
+  /^(?:(?:euh|heu|eu|bah|ben|bon|alors|ok|okay|ouais|oui|ouai|hey|salut|hello|cest|c est|cet)\s+)*/;
+
+/** Formes que Whisper entend souvent à la place de « Scribe ». */
+const STRONG_WAKE_RE = /^(?:cyber[\s-]*scribe|scribe|scrib)\b/;
+const WEAK_WAKE_RE = /^(?:script|scripts|escribe|ascribe|skribe?|stribe)\b/;
 
 /** Normalise accents / ponctuation pour le matching vocal. */
 export function normalizeVoiceText(raw: string): string {
@@ -31,52 +49,110 @@ export function normalizeVoiceText(raw: string): string {
     .trim()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[.,;:!?…]/g, " ")
+    .replace(/[.,;:!?…'"«»“”‘’()[\]{}]/g, " ")
+    .replace(/[-–—_/\\]+/g, " ")
     .replace(/\s+/g, " ")
-    .trim();
+    .trim()
+    .toLowerCase();
 }
 
-const AI_PATTERNS: { pattern: RegExp; action: AiAction }[] = [
-  { pattern: /^scribe,?\s*r[eé]sum[eé]/i, action: "summarize" },
-  { pattern: /^scribe,?\s*reformule/i, action: "reformulate" },
-  { pattern: /^scribe,?\s*corrige/i, action: "correct" },
-];
+function stripFiller(normalized: string): string {
+  return normalized.replace(FILLER_RE, "").trim();
+}
 
-const TRANSLATE_PATTERN = /^scribe,?\s*traduis(\s+en\s+(.+))?/i;
-const SEARCH_PATTERN = /^scribe,?\s*cherche\s+(.+)/i;
-const OPEN_PATTERN =
-  /^scribe,?\s*ouvre(\s+la\s+note|\s+le\s+fichier)?\s+(.+)/i;
+function splitWake(normalized: string): {
+  wake: "strong" | "weak" | null;
+  rest: string;
+} {
+  const s = stripFiller(normalized);
+  const strong = s.match(STRONG_WAKE_RE);
+  if (strong) {
+    return { wake: "strong", rest: s.slice(strong[0].length).trim() };
+  }
+  const weak = s.match(WEAK_WAKE_RE);
+  if (weak) {
+    return { wake: "weak", rest: s.slice(weak[0].length).trim() };
+  }
+  return { wake: null, rest: s };
+}
+
+function extractAfter(raw: string, verb: RegExp): string {
+  const m = raw.match(verb);
+  return (m?.[1] ?? "").trim();
+}
+
+function matchCommand(
+  rest: string,
+  original: string,
+): Exclude<ParsedVoice, VoiceInsert | VoiceUnknown> | null {
+  if (/^(resume[rez]?|un resume|le resume|la resume|fait un resume)\b/.test(rest)) {
+    return { kind: "ai", action: "summarize" };
+  }
+  if (/^reformul/.test(rest)) {
+    return { kind: "ai", action: "reformulate" };
+  }
+  if (/^corrig|^correction\b/.test(rest)) {
+    return { kind: "ai", action: "correct" };
+  }
+  if (/^tradu/.test(rest)) {
+    const langRaw =
+      extractAfter(
+        original,
+        /tradu(?:is|it|ire|ction)(?:\s+en\s+(.+))?/i,
+      ) || extractAfter(rest, /^tradu\S*(?:\s+en\s+(.+))?/);
+    const translateTo = parseTranslateVoiceLang(langRaw || "anglais") ?? "en";
+    return { kind: "ai", action: "translate", translateTo };
+  }
+
+  if (/^(?:re)?cherch/.test(rest)) {
+    const query =
+      extractAfter(original, /(?:re)?cherch(?:e|er|ez|é|ée)?\s+(.+)/i) ||
+      extractAfter(rest, /^(?:re)?cherch\S*\s+(.+)/);
+    if (query) return { kind: "search", query };
+    return { kind: "search", query: "" };
+  }
+
+  if (/^ouvr/.test(rest)) {
+    const query =
+      extractAfter(
+        original,
+        /ouvr(?:e|ir|ez|ert)?\s+(?:(?:la|une)\s+note\s+|(?:le|un)\s+fichier\s+)?(.+)/i,
+      ) ||
+      extractAfter(
+        rest,
+        /^ouvr\S*\s+(?:(?:la|une)\s+note\s+|(?:le|un)\s+fichier\s+)?(.+)/,
+      );
+    if (query) return { kind: "open", query };
+    return null;
+  }
+
+  return null;
+}
 
 export function parseVoiceTranscript(raw: string): ParsedVoice {
   const text = raw.trim();
   if (!text) return { kind: "insert", text: "" };
 
   const normalized = normalizeVoiceText(text);
+  const { wake, rest } = splitWake(normalized);
 
-  for (const { pattern, action } of AI_PATTERNS) {
-    if (pattern.test(normalized) || pattern.test(text)) {
-      return { kind: "ai", action };
-    }
+  if (!wake) {
+    return { kind: "insert", text };
   }
 
-  const translate = text.match(TRANSLATE_PATTERN) ?? normalized.match(/^scribe,?\s*traduis(\s+en\s+(.+))?/i);
-  if (translate) {
-    const langRaw = (translate[2] ?? "anglais").trim();
-    const translateTo = parseTranslateVoiceLang(langRaw) ?? "en";
-    return { kind: "ai", action: "translate", translateTo };
+  const command = matchCommand(rest, text);
+  if (command) return command;
+
+  // « script python pour… » : dictée, pas une commande.
+  if (wake === "weak") {
+    return { kind: "insert", text };
   }
 
-  const search = text.match(SEARCH_PATTERN) ?? normalized.match(/^scribe,?\s*cherche\s+(.+)/i);
-  if (search) {
-    return { kind: "search", query: search[1].trim() };
+  // Dictée longue qui commence par « Scribe » : on insère.
+  const words = rest.split(/\s+/).filter(Boolean);
+  if (words.length >= 10) {
+    return { kind: "insert", text };
   }
 
-  const open = text.match(OPEN_PATTERN) ?? normalized.match(/^scribe,?\s*ouvre(\s+la\s+note|\s+le\s+fichier)?\s+(.+)/i);
-  if (open) {
-    const query = (open[2] ?? open[1] ?? "").trim();
-    if (query) return { kind: "open", query };
-  }
-
-  return { kind: "insert", text };
+  return { kind: "unknown", text };
 }
-

@@ -120,30 +120,36 @@ Aucune dépendance cloud obligatoire.
 
 ## 5. Roadmap
 
-### Phase 1 – MVP (priorité)
-1. Structure vault Markdown + dossiers
-2. Éditeur TipTap de base
-3. Thèmes Light & Dark Pastel + UI minimaliste + icônes pixel
-4. Intégration transcription vocale existante
-5. Mots-clés / commandes vocales de base
-6. Panneau Ctrl+T
-7. Résumé automatique + premiers prompts IA (Ollama)
-8. Gestion basique des images
-9. Export Markdown
+### Phase 1 – MVP (priorité) — largement en place
+1. ~~Structure vault Markdown + dossiers~~
+2. ~~Éditeur TipTap de base~~ (+ outline, wikilinks, images)
+3. ~~Thèmes Light & Dark Pastel + UI minimaliste + icônes pixel~~
+4. ~~Intégration transcription vocale~~ (sidecar long-lived + heartbeat)
+5. ~~Mots-clés / commandes vocales de base~~ (« Scribe, … » — à stabiliser en usage réel)
+6. ~~Panneau Ctrl+T~~
+7. ~~Résumé automatique + premiers prompts IA (Ollama)~~
+8. ~~Gestion basique des images~~
+9. ~~Export Markdown~~
+10. **En cours** : caret stable, tests, single-instance, frontmatter tags/dates, docs
+
+### Stabilisation (court terme)
+- Sidecar : heartbeat, shutdown à la fermeture, logs
+- Tests unitaires (voice parser, caret, vault path)
+- README / troubleshooting
+- Pas de bundling NSIS tant que le socle n’est pas figé
 
 ### Phase 2 – Enrichissement IA & UX
-- Auto-suggestions
-- Outline automatique avancé
-- Liens internes intelligents
-- Traduction multi-langues
-- Amélioration du compagnon vocal
-- Templates de notes
+- Pipeline RAG complet (embeddings Ollama + index local) — amorcé
+- Auto-suggestions plus intelligentes
+- Outline / wikilinks / frontmatter aboutis
+- Templates de notes + graph simple
+- Cross-platform (macOS)
 
-### Phase 3 – Options avancées (plus tard)
+### Phase 3 – Distribution & options avancées
+- Bundling NSIS + updater Tauri + signature
 - Publication (Nextcloud / WebDAV…)
 - Partage d'équipe chiffré + édition live (CRDT)
 - Plugins / prompts custom
-- Graph de notes
 
 ---
 

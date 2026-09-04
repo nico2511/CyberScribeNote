@@ -278,7 +278,7 @@
           <p class="text-xs font-medium text-text">{voiceStateLabel}</p>
           <p class="text-[10px] text-text-muted">
             {#if voiceStatus.running}
-              {voiceStatus.hotkey} pour dicter · « Scribe, corrige »…
+              {voiceStatus.hotkey} puis « Scribe, corrige » · rappuyez pour envoyer
             {:else}
               Réglages → Voix pour activer le worker
             {/if}

@@ -29,6 +29,7 @@
   import { scanBodyTypoLines, bodyHasTypoLines } from "$lib/note/scanTypos";
   import { parseVoiceTranscript } from "$lib/voice/keywords";
   import { replaceTextRange, type AiActionRequest, type TextSelection } from "$lib/voice/commands";
+  import { mapCaretThroughReplace } from "$lib/note/caret";
   import { resolveWikilink } from "$lib/vault/wikilinks";
   import {
     extractExistingSummary,
@@ -37,7 +38,7 @@
     translateLangLabel,
   } from "$lib/ai/languages";
   import { fetchRagContext } from "$lib/ai/rag";
-  import { noteBody, parseNoteContext, setNoteContext, ensureVisibleContextBlock } from "$lib/note/frontmatter";
+  import { noteBody, parseNoteContext, setNoteContext, ensureVisibleContextBlock, touchUpdatedDate } from "$lib/note/frontmatter";
   import { mergeBodyMarkdown } from "$lib/markdown/bridge";
   import PixelIcon from "$lib/components/PixelIcon.svelte";
   import { dismissToast, notify } from "$lib/stores/notifications";
@@ -131,6 +132,8 @@
   let lastProactiveKey = "";
   let voiceTranscriptChain: Promise<void> = Promise.resolve();
   let voiceLoadingToastId: string | null = null;
+  let voiceCrashRestarts = 0;
+  let voiceCrashWindowStart = 0;
   let noteScanTimer: ReturnType<typeof setTimeout> | null = null;
   let fullTypoScanTimer: ReturnType<typeof setTimeout> | null = null;
   /** Invalide les réponses IA en cours quand on change de note. */
@@ -274,7 +277,13 @@
       const next = replaceTextRange(body, span.start, span.end, proposal);
       if (next === body) return false;
 
-      applyAutoTypoResult(next, span.start + proposal.length, "✓ Fautes corrigées (analyse de la phrase)");
+      applyAutoTypoResult(
+        next,
+        span.start,
+        span.end,
+        proposal.length,
+        "✓ Fautes corrigées (analyse de la phrase)",
+      );
       return true;
     } catch {
       return false;
@@ -310,9 +319,22 @@
     }, 3500);
   }
 
-  function applyAutoTypoResult(next: string, cursor: number, message: string) {
+  function applyAutoTypoResult(
+    next: string,
+    editStart: number,
+    editEnd: number,
+    replacementLen: number,
+    message: string,
+  ) {
+    const caret = mapCaretThroughReplace(
+      lastCaretOffset,
+      editStart,
+      editEnd,
+      replacementLen,
+    );
     content = next;
-    editorCursor = cursor;
+    lastCaretOffset = caret;
+    editorCursor = caret;
     dirty = next !== savedContent;
     scheduleAutoSave();
     if (selectedPath && dirty) void persistNote(selectedPath, next);
@@ -328,6 +350,7 @@
 
   async function runBatchAutoTypoFix() {
     if (!autoTypoFixEnabled || !selectedPath || autoTypoFixBusy) return;
+    if (voiceStatus.recording || voiceStatus.transcribing) return;
     autoTypoFixBusy = true;
 
     try {
@@ -336,11 +359,14 @@
       );
 
       const before = content;
-      const { content: next, count } = autoFixAllTypoLines(content);
+      const caretBefore = lastCaretOffset;
+      const { content: next, count, caret } = autoFixAllTypoLines(content, caretBefore);
       let working = content;
       if (count > 0 && next !== before) {
         working = next;
         content = next;
+        lastCaretOffset = caret;
+        editorCursor = caret;
         dirty = next !== savedContent;
         scheduleAutoSave();
         if (selectedPath) await persistNote(selectedPath, next);
@@ -404,10 +430,27 @@
 
       const parsed = parseVoiceTranscript(text);
 
+      if (parsed.kind === "unknown") {
+        const preview = text.slice(0, 80);
+        const msg = `Commande non reconnue : « ${preview} ». Dites par ex. « Scribe, corrige ».`;
+        statusMessage = msg;
+        notify({
+          kind: "warning",
+          title: "Commande vocale",
+          message: msg,
+          key: "voice-cmd",
+        });
+        return;
+      }
+
       if (parsed.kind === "search") {
         openSearch();
-        await runSearch(parsed.query);
-        statusMessage = `Recherche vocale : ${parsed.query}`;
+        if (parsed.query) await runSearch(parsed.query);
+        const msg = parsed.query
+          ? `Recherche vocale : ${parsed.query}`
+          : "Recherche vocale — saisissez un mot-clé.";
+        statusMessage = msg;
+        notify({ kind: "success", title: "Scribe · chercher", message: msg, key: "voice-cmd" });
         return;
       }
 
@@ -417,19 +460,44 @@
       }
 
       if (parsed.kind === "ai") {
+        const labels: Record<string, string> = {
+          summarize: "résume",
+          reformulate: "reformule",
+          correct: "corrige",
+          translate: parsed.translateTo
+            ? `traduis en ${translateLangLabel(parsed.translateTo).toLowerCase()}`
+            : "traduis",
+        };
+        const phrase = labels[parsed.action] ?? parsed.action;
         if (!selectedPath) {
-          statusMessage = "Ouvrez une note pour les commandes IA vocales (PTT).";
+          const msg = "Ouvrez une note pour les commandes IA vocales (PTT).";
+          statusMessage = msg;
+          notify({ kind: "warning", title: "Scribe", message: msg, key: "voice-cmd" });
+          return;
+        }
+        if (!noteBody(content).trim()) {
+          const msg = "La note est vide — rien à transformer. Dictez d'abord du texte.";
+          statusMessage = msg;
+          notify({ kind: "warning", title: "Scribe", message: msg, key: "voice-cmd" });
           return;
         }
         if (!ollamaStatus.available && parsed.action !== "correct") {
           const ok = await ensureOllamaRunning(true);
           if (!ok) {
-            statusMessage = "Ollama hors ligne — impossible d'exécuter la commande IA.";
+            const msg = "Ollama hors ligne — impossible d'exécuter la commande IA.";
+            statusMessage = msg;
+            notify({ kind: "error", title: "Scribe", message: msg, key: "voice-cmd" });
             settingsOpen = true;
             return;
           }
         }
-        statusMessage = `Commande vocale : ${parsed.action}…`;
+        statusMessage = `Commande vocale : ${phrase}…`;
+        notify({
+          kind: "info",
+          title: "Scribe",
+          message: `Commande « ${phrase} » reconnue — traitement…`,
+          key: "voice-cmd",
+        });
         await handleAiAction({
           action: parsed.action,
           translateTo: parsed.translateTo,
@@ -456,13 +524,21 @@
   async function openNoteByQuery(query: string) {
     const match = resolveWikilink(query, entries);
     if (!match) {
-      statusMessage = `Aucune note trouvée pour « ${query} ».`;
+      const msg = `Aucune note trouvée pour « ${query} ».`;
+      statusMessage = msg;
+      notify({ kind: "warning", title: "Scribe · ouvrir", message: msg, key: "voice-cmd" });
       openSearch();
       await runSearch(query);
       return;
     }
     await loadNote(match.path);
     statusMessage = `Note ouverte : ${match.title}`;
+    notify({
+      kind: "success",
+      title: "Scribe · ouvrir",
+      message: `Note ouverte : ${match.title}`,
+      key: "voice-cmd",
+    });
   }
 
   function handleOpenWikilink(title: string) {
@@ -563,9 +639,14 @@
   async function persistNote(path: string, body: string) {
     saving = true;
     try {
-      await invoke("write_note", { relativePath: path, content: body });
-      savedContent = body;
+      const stamped = touchUpdatedDate(body);
+      await invoke("write_note", { relativePath: path, content: stamped });
+      savedContent = stamped;
       dirty = false;
+      if (selectedPath === path && stamped !== content) {
+        content = stamped;
+        editorCursor = lastCaretOffset;
+      }
     } finally {
       saving = false;
     }
@@ -583,6 +664,7 @@
     if (!autoTypoFixEnabled || !selectedPath) return;
     if (fullTypoScanTimer) clearTimeout(fullTypoScanTimer);
     fullTypoScanTimer = setTimeout(() => {
+      if (voiceStatus.recording || voiceStatus.transcribing) return;
       void runBatchAutoTypoFix();
     }, delayMs);
   }
@@ -741,7 +823,12 @@
     const { action, selection: sel, translateTo } = request;
     const fullNote = !sel;
     const targetText = sel?.text ?? noteBody(content);
-    if (!targetText.trim()) return;
+    if (!targetText.trim()) {
+      const msg = "La note est vide — rien à transformer.";
+      statusMessage = msg;
+      notify({ kind: "warning", title: "IA", message: msg, key: "ai-empty" });
+      return;
+    }
 
     const epoch = aiEpoch;
     const pathAtStart = selectedPath;
@@ -1419,17 +1506,57 @@
           // statut rafraîchi ci-dessus
         }
       }),
-      await listen("voice-worker-stopped", async () => {
+      await listen("voice-worker-stopped", async (event) => {
         await refreshVoice();
-        const msg =
+        const payload = (event.payload ?? {}) as { message?: string; exitCode?: number | null };
+        const detail =
+          payload.message?.trim() ||
           "Worker vocal arrêté. Réglages → Voix → « Appliquer la config voix » pour le relancer.";
-        statusMessage = msg;
+        statusMessage = detail;
         notify({
           kind: "error",
           title: "Worker vocal arrêté",
-          message: msg,
+          message: detail,
           key: "voice-stopped",
+          durationMs: 16000,
         });
+
+        const now = Date.now();
+        if (now - voiceCrashWindowStart > 60_000) {
+          voiceCrashWindowStart = now;
+          voiceCrashRestarts = 0;
+        }
+        if (voiceCrashRestarts >= 1) {
+          notify({
+            kind: "warning",
+            title: "Voix bloquée",
+            message:
+              "Relance auto arrêtée. Réglages → Voix → « Appliquer la config voix ». Logs : Documents/CyberScribeNote/voice_worker.log",
+            key: "voice-blocked",
+            durationMs: 20000,
+          });
+          return;
+        }
+        voiceCrashRestarts += 1;
+
+        try {
+          await invoke("voice_restart", { force: true });
+          await invoke("voice_preload_whisper_model");
+          notify({
+            kind: "info",
+            title: "Worker vocal relancé",
+            message: "Attendez le chargement du modèle Whisper avant de dicter.",
+            key: "voice-restart",
+          });
+          await refreshVoice();
+        } catch (e) {
+          notify({
+            kind: "error",
+            title: "Relance impossible",
+            message: String(e),
+            key: "voice-restart-fail",
+          });
+        }
       }),
     );
 

@@ -101,3 +101,79 @@ function stripYamlValue(raw: string): string {
   }
   return v;
 }
+
+export interface NoteFrontmatterMeta {
+  title: string;
+  tags: string[];
+  created: string;
+  updated: string;
+}
+
+function parseTagsValue(raw: string): string[] {
+  const v = raw.trim();
+  if (!v) return [];
+  if (v.startsWith("[") && v.endsWith("]")) {
+    return v
+      .slice(1, -1)
+      .split(",")
+      .map((t) => stripYamlValue(t.trim()))
+      .filter(Boolean);
+  }
+  return [stripYamlValue(v)].filter(Boolean);
+}
+
+/** Lit title / tags / dates du YAML (sans dépendre de gray-matter côté hot path). */
+export function parseFrontmatterMeta(content: string): NoteFrontmatterMeta {
+  const empty: NoteFrontmatterMeta = { title: "", tags: [], created: "", updated: "" };
+  if (!content.startsWith("---")) return empty;
+  const end = content.indexOf("---", 3);
+  if (end === -1) return empty;
+
+  const meta = { ...empty };
+  for (const line of content.slice(3, end).split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("title:")) meta.title = stripYamlValue(trimmed.slice(6));
+    else if (trimmed.startsWith("tags:")) meta.tags = parseTagsValue(trimmed.slice(5));
+    else if (trimmed.startsWith("created:")) meta.created = stripYamlValue(trimmed.slice(8));
+    else if (trimmed.startsWith("updated:")) meta.updated = stripYamlValue(trimmed.slice(8));
+  }
+  return meta;
+}
+
+function todayIso(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+/** Met à jour `updated:` (crée le frontmatter si besoin). */
+export function touchUpdatedDate(content: string): string {
+  const date = todayIso();
+  if (!content.startsWith("---")) {
+    return `---\nupdated: ${date}\n---\n\n${content}`;
+  }
+  const end = content.indexOf("---", 3);
+  if (end === -1) return content;
+  const fm = content.slice(3, end);
+  const body = content.slice(end + 3);
+  const lines = fm.split("\n").filter((l) => !l.trim().startsWith("updated:"));
+  // garder une ligne vide de début éventuelle
+  const core = lines.filter((l, i) => !(i === 0 && l.trim() === ""));
+  core.push(`updated: ${date}`);
+  return `---\n${core.join("\n").replace(/^\n+/, "").replace(/\n+$/, "")}\n---${body.startsWith("\n") ? body : `\n${body}`}`;
+}
+
+/** Remplace la liste de tags YAML. */
+export function setFrontmatterTags(content: string, tags: string[]): string {
+  const cleaned = [...new Set(tags.map((t) => t.trim()).filter(Boolean))];
+  const tagsLine = `tags: [${cleaned.join(", ")}]`;
+  if (!content.startsWith("---")) {
+    return `---\n${tagsLine}\nupdated: ${todayIso()}\n---\n\n${content}`;
+  }
+  const end = content.indexOf("---", 3);
+  if (end === -1) return content;
+  const fm = content.slice(3, end);
+  const body = content.slice(end + 3);
+  const lines = fm.split("\n").filter((l) => !l.trim().startsWith("tags:"));
+  const core = lines.filter((l, i) => !(i === 0 && l.trim() === ""));
+  core.push(tagsLine);
+  return `---\n${core.join("\n").replace(/^\n+/, "").replace(/\n+$/, "")}\n---${body.startsWith("\n") ? body : `\n${body}`}`;
+}

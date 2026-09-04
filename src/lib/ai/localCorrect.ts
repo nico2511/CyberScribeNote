@@ -61,7 +61,13 @@ export function repairRunawayNe(text: string): string {
 }
 
 export function applyLocalCorrections(text: string): string {
-  let out = repairRunawayNe(text);
+  // Préserver espaces / newlines de bord : sinon le curseur recule d'un cran
+  // à chaque espace pendant que l'auto-correction tourne.
+  const lead = text.match(/^\s*/)?.[0] ?? "";
+  const rest = text.slice(lead.length);
+  const trail = rest.match(/\s*$/)?.[0] ?? "";
+  let out = repairRunawayNe(rest.slice(0, rest.length - trail.length));
+
   for (const { pattern, replace } of REPLACEMENTS) {
     const next = out.replace(pattern, replace);
     // Garde-fou : refuser une correction qui multiplie les « ne »
@@ -70,10 +76,10 @@ export function applyLocalCorrections(text: string): string {
     }
     out = next;
   }
-  // Mots parasites en fin de phrase (dictée vocale)
+  // Mots parasites en fin de phrase (dictée vocale) — hors espaces de bord
   out = out.replace(/\s+\b(bijour|bjour|bonjou)\s*([.!?…])?\s*$/gi, "$2");
-  out = out.replace(/\s{2,}/g, " ").trimEnd();
-  return out;
+  out = out.replace(/\s{2,}/g, " ").trim();
+  return lead + out + trail;
 }
 
 /** Fusionne la réponse IA et les corrections locales fiables. */

@@ -23,6 +23,7 @@
   import type { OutlineItem } from "$lib/markdown/outline";
   import { editingTargetAtCursor, lineAtCursor } from "$lib/note/paragraph";
   import type { ParagraphSpan } from "$lib/note/paragraph";
+  import { parseFrontmatterMeta, setFrontmatterTags } from "$lib/note/frontmatter";
   import { ResizableImage } from "$lib/tiptap/resizableImage";
   import { WikiLink } from "$lib/tiptap/wikiLink";
   import { resolveMediaUrl } from "$lib/vault/media";
@@ -141,24 +142,36 @@
           return s;
         })()
       : 0;
-    const bodyOffset = Math.max(0, offset - bodyStart);
-    const body = md.slice(bodyStart);
-    // Target text: the snippet at the offset we want to reach
-    const targetSnippet = body.slice(Math.max(0, bodyOffset - 20), bodyOffset + 20);
-    // Walk the ProseMirror doc to match character count
-    let counted = 0;
-    let found = 1;
-    editor.state.doc.descendants((node, pos) => {
-      if (!node.isText || !node.text) return true;
-      const next = counted + node.text.length;
-      if (counted + node.text.length >= bodyOffset) {
-        found = pos + Math.min(node.text.length, Math.max(0, bodyOffset - counted));
-        return false;
+    const bodyOffset = Math.max(0, Math.min(offset - bodyStart, md.length - bodyStart));
+    const doc = editor.state.doc;
+    const maxPos = doc.content.size;
+
+    // Approximation stable : chercher la position PM dont le texte (avec \n)
+    // a la même longueur que le préfixe markdown — mieux que garder un ancien from.
+    let best = 1;
+    let bestDelta = Number.POSITIVE_INFINITY;
+    const step = Math.max(1, Math.floor(maxPos / 400));
+    for (let pos = 1; pos <= maxPos; pos += step) {
+      const len = doc.textBetween(0, pos, "\n", "\n").length;
+      const delta = Math.abs(len - bodyOffset);
+      if (delta < bestDelta) {
+        bestDelta = delta;
+        best = pos;
+        if (delta === 0) break;
       }
-      counted = next;
-      return true;
-    });
-    return Math.max(1, found);
+    }
+    // Raffiner autour du meilleur candidat
+    const lo = Math.max(1, best - step);
+    const hi = Math.min(maxPos, best + step);
+    for (let pos = lo; pos <= hi; pos++) {
+      const len = doc.textBetween(0, pos, "\n", "\n").length;
+      const delta = Math.abs(len - bodyOffset);
+      if (delta < bestDelta) {
+        bestDelta = delta;
+        best = pos;
+      }
+    }
+    return Math.max(1, best);
   }
 
   function readSelectionFromEditor() {
@@ -225,8 +238,17 @@
       const md = fullMarkdownFromEditor();
       const cursor = cursorMdOffset();
       const span = lineAtCursor(md, cursor);
-      if (span) onAutoTypoFix(span);
-    }, 1200);
+      if (!span) return;
+
+      const at = Math.min(Math.max(0, cursor - span.start), span.text.length);
+      const before = span.text.slice(0, at);
+      // Espace final / frappe en cours → ne pas réécrire (évite le curseur qui recule)
+      if (/\s$/.test(before) || (before.length > 0 && /\S$/.test(before) && !/[.!?…]$/.test(before))) {
+        return;
+      }
+
+      onAutoTypoFix(span);
+    }, 1600);
   }
 
   function scheduleProactiveCheck() {
@@ -240,18 +262,21 @@
     }, 4000);
   }
 
-  function setEditorFromMarkdown(md: string) {
+  function setEditorFromMarkdown(md: string, preferredMdOffset?: number | null) {
     if (!editor) return;
     applyingExternal = true;
-    const prevFrom = editor.state.selection.from;
+    const caretMd =
+      preferredMdOffset != null ? preferredMdOffset : cursorMdOffset();
     const html = markdownToHtml(md, notePath, vaultPath);
     editor.commands.setContent(html || "<p></p>", { emitUpdate: false });
     lastEmitted = md;
     outlineItems = extractOutline(md);
+    const pos = mdOffsetToPos(md, caretMd);
     const size = editor.state.doc.content.size;
-    const restore = Math.min(Math.max(1, prevFrom), Math.max(1, size));
+    const restore = Math.min(Math.max(1, pos), Math.max(1, size));
     try {
       editor.commands.setTextSelection(restore);
+      editor.commands.scrollIntoView();
     } catch {
       /* ignore */
     }
@@ -391,9 +416,30 @@
   function navigateOutline(offset: number) {
     if (!editor) return;
     const pos = mdOffsetToPos(content, offset);
-    editor.chain().focus().setTextSelection(pos).run();
-    const dom = editor.view.domAtPos(pos);
-    (dom.node as HTMLElement).parentElement?.scrollIntoView({ block: "center", behavior: "smooth" });
+    editor.chain().focus().setTextSelection(pos).scrollIntoView().run();
+    try {
+      const dom = editor.view.domAtPos(pos);
+      const el =
+        (dom.node as HTMLElement).nodeType === Node.TEXT_NODE
+          ? (dom.node as Text).parentElement
+          : (dom.node as HTMLElement);
+      el?.scrollIntoView({ block: "center", behavior: "smooth" });
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const noteMeta = $derived(parseFrontmatterMeta(content));
+
+  function editTags() {
+    const current = noteMeta.tags.join(", ");
+    const next = window.prompt("Tags (séparés par des virgules)", current);
+    if (next == null) return;
+    const tags = next
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean);
+    onChange(setFrontmatterTags(content, tags));
   }
 
   const toolbarButtons: { label: string; title: string; action: () => void }[] = [
@@ -600,18 +646,24 @@
     if (!editor) return;
 
     if (md !== lastEmitted) {
-      setEditorFromMarkdown(md);
-    }
-
-    if (cursor != null) {
+      // Prefer explicit caret from parent (auto-typo / dictée), sinon caret courant
+      setEditorFromMarkdown(md, cursor);
+      if (cursor != null) {
+        onCursorRestored?.();
+        return;
+      }
+    } else if (cursor != null) {
       const pos = mdOffsetToPos(md, cursor);
       try {
-        editor.chain().focus().setTextSelection(pos).run();
+        editor.chain().focus().setTextSelection(pos).scrollIntoView().run();
       } catch {
         /* ignore */
       }
       onCursorRestored?.();
-    } else if (range) {
+      return;
+    }
+
+    if (range) {
       const from = mdOffsetToPos(md, range.start);
       const to = mdOffsetToPos(md, range.end);
       try {
@@ -645,7 +697,22 @@
         {:else}
           Sauvegardé
         {/if}
+        {#if noteMeta.updated}
+          <span class="text-text-muted/80"> · maj {noteMeta.updated}</span>
+        {/if}
       </p>
+      <button
+        type="button"
+        class="mt-1 max-w-full truncate rounded-lg px-1.5 py-0.5 text-left text-[10px] text-text-muted transition hover:bg-accent-lavender/20"
+        title="Modifier les tags"
+        onclick={editTags}
+      >
+        {#if noteMeta.tags.length}
+          {noteMeta.tags.map((t) => `#${t}`).join(" ")}
+        {:else}
+          + tags
+        {/if}
+      </button>
     </div>
 
     <div class="flex items-center gap-2">

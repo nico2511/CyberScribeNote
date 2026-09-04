@@ -12,6 +12,17 @@ const turndown = new TurndownService({
   emDelimiter: "*",
 });
 
+turndown.addRule("emptyParagraph", {
+  filter: (node) => {
+    if (node.nodeName !== "P") return false;
+    const el = node as HTMLElement;
+    if (el.querySelector("img, span[data-wikilink]")) return false;
+    return !(el.textContent || "").replace(/\u200b/g, "").trim();
+  },
+  // Marqueur invisible pour survivre au round-trip TipTap ↔ Markdown
+  replacement: () => `\n\n\u200b\n\n`,
+});
+
 turndown.addRule("textAlign", {
   filter: (node) => {
     if (!["P", "H1", "H2", "H3", "H4", "H5", "H6"].includes(node.nodeName)) return false;
@@ -100,6 +111,9 @@ export function markdownToHtml(
   const { body } = noteBodyRange(content);
   let md = preprocessWikilinks(body);
 
+  // Lignes « vides » TipTap (paragraphes vides) : \u200b seul → <p></p>
+  md = md.replace(/^(?:\u200b|[ \t])+$/gm, "<p></p>");
+
   // Réécrire images pour garder le chemin relatif
   md = md.replace(
     /!\[([^\]]*)\]\(([^)]+)\)/g,
@@ -121,7 +135,11 @@ export function markdownToHtml(
 /** Sérialise le HTML TipTap vers Markdown (corps uniquement). */
 export function htmlToMarkdown(html: string): string {
   if (!html || html === "<p></p>") return "";
-  return turndown.turndown(html).trimEnd() + "\n";
+  let md = turndown.turndown(html);
+  // Normaliser marqueurs de paragraphes vides
+  md = md.replace(/(?:^|\n)\u200b(?=\n|$)/g, "\n");
+  md = md.replace(/\n{3,}/g, "\n\n\u200b\n\n");
+  return md.replace(/[ \t]+\n/g, "\n").replace(/\s+$/g, "") + "\n";
 }
 
 /** Recompose le document avec préfixe YAML éventuel. */

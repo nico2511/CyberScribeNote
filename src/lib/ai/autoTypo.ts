@@ -3,6 +3,7 @@ import { applyLocalCorrections, repairRunawayNe } from "$lib/ai/localCorrect";
 import { hasContextualTypo, likelyNeedsCorrection } from "$lib/ai/typoHints";
 import { stillHasObviousTypos } from "$lib/ai/localCorrect";
 import { replaceTextRange } from "$lib/voice/commands";
+import { mapCaretThroughReplace } from "$lib/note/caret";
 import type { ParagraphSpan } from "$lib/note/paragraph";
 import { scanBodyTypoLines } from "$lib/note/scanTypos";
 
@@ -16,7 +17,11 @@ export function lineNeedsAiTypoFix(text: string): boolean {
   return lineNeedsTypoFix(text) && (local === null || stillHasObviousTypos(afterLocal) || hasContextualTypo(afterLocal));
 }
 
-export function tryAutoFixSpan(content: string, span: ParagraphSpan): {
+export function tryAutoFixSpan(
+  content: string,
+  span: ParagraphSpan,
+  caret = span.end,
+): {
   content: string;
   cursor: number;
   fixed: boolean;
@@ -31,15 +36,23 @@ export function tryAutoFixSpan(content: string, span: ParagraphSpan): {
 
   return {
     content: next,
-    cursor: span.start + fixed.length,
+    cursor: mapCaretThroughReplace(caret, span.start, span.end, fixed.length),
     fixed: true,
   };
 }
 
 /** Corrige silencieusement toutes les lignes repérées dans la note. */
-export function autoFixAllTypoLines(content: string): { content: string; count: number } {
+export function autoFixAllTypoLines(
+  content: string,
+  caret = 0,
+): { content: string; count: number; caret: number } {
   let next = repairRunawayNe(content);
   let count = next !== content ? 1 : 0;
+  let caretOut = caret;
+  if (next !== content) {
+    // repairRunawayNe is whole-doc; keep caret clamped
+    caretOut = Math.min(caretOut, next.length);
+  }
 
   for (let pass = 0; pass < 3; pass++) {
     const lines = [...scanBodyTypoLines(next)].sort((a, b) => b.start - a.start);
@@ -57,6 +70,12 @@ export function autoFixAllTypoLines(content: string): { content: string; count: 
       const replacement = rawLine.endsWith("\r") ? fixed + "\r" : fixed;
       const updated = replaceTextRange(next, line.start, line.end, replacement);
       if (updated !== next) {
+        caretOut = mapCaretThroughReplace(
+          caretOut,
+          line.start,
+          line.end,
+          replacement.length,
+        );
         next = updated;
         count++;
         changed = true;
@@ -66,5 +85,5 @@ export function autoFixAllTypoLines(content: string): { content: string; count: 
     if (!changed) break;
   }
 
-  return { content: next, count };
+  return { content: next, count, caret: caretOut };
 }
