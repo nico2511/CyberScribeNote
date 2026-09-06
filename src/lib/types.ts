@@ -43,6 +43,8 @@ export interface AppConfig {
   whisperComputeType: string;
   whisperProfile: string;
   maxRecordSeconds: number;
+  /** Chemin absolu du vault ; null/undefined = défaut Documents/CyberScribeNote/vault */
+  vaultPath?: string | null;
 }
 
 export interface RecommendedModel {
@@ -79,8 +81,10 @@ export interface AiSuggestion {
   notePath?: string;
   source?: AiSuggestionSource;
   reason?: string;
-  /** Mode d'application : append = complément en fin de note (résumés). */
-  applyMode?: "replace" | "append";
+  /** Mode d'application : append = complément ; tags = frontmatter tags. */
+  applyMode?: "replace" | "append" | "tags";
+  /** Skill de conception si la suggestion vient du catalogue, pas d'un prompt libre. */
+  skillId?: string;
   selection?: { start: number; end: number; text: string };
 }
 

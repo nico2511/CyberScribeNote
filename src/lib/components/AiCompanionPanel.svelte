@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { AiSuggestion, VoiceStatus } from "$lib/types";
   import SuggestionDiff from "$lib/components/SuggestionDiff.svelte";
+  import { NOTE_SKILLS, type SkillId } from "$lib/ai/skills";
   import {
     VOICE_CATEGORY_LABELS,
     VOICE_COMMANDS,
@@ -31,19 +32,27 @@
     proactiveEnabled: boolean;
     autoTypoFixEnabled: boolean;
     autoSummarizeEnabled: boolean;
+    buddyEnabled?: boolean;
     proactiveStatus?: string;
     customTargetLabel?: string;
     notePath?: string | null;
+    ollamaAvailable?: boolean;
     onToggleRecord: () => void;
     onContextChange: (value: string) => void;
     onProactiveToggle: (enabled: boolean) => void;
     onAutoTypoToggle: (enabled: boolean) => void;
     onAutoSummarizeToggle: (enabled: boolean) => void;
+    onBuddyToggle?: (enabled: boolean) => void;
     onCustomPrompt: (prompt: string) => void;
+    onSkill: (id: SkillId) => void;
     onApply: (id: string) => void;
     onDismiss: (id: string) => void;
     onDismissAll: () => void;
     onClose: () => void;
+    onCustomPromptFocusChange?: (focused: boolean) => void;
+    /** Fragment de dictée à coller dans le prompt custom (id pour rejouer). */
+    dictationToPrompt?: { text: string; id: number } | null;
+    onDictationToPromptConsumed?: () => void;
   }
 
   let {
@@ -56,29 +65,38 @@
     proactiveEnabled,
     autoTypoFixEnabled,
     autoSummarizeEnabled,
+    buddyEnabled = true,
     proactiveStatus = "",
     customTargetLabel = "note entière",
     notePath = null,
+    ollamaAvailable = true,
     onToggleRecord,
     onContextChange,
     onProactiveToggle,
     onAutoTypoToggle,
     onAutoSummarizeToggle,
+    onBuddyToggle,
     onCustomPrompt,
+    onSkill,
     onApply,
     onDismiss,
     onDismissAll,
     onClose,
+    onCustomPromptFocusChange,
+    dictationToPrompt = null,
+    onDictationToPromptConsumed,
   }: Props = $props();
 
   let contextExpanded = $state(false);
   let voiceCommandsOpen = $state(false);
   let customPrompt = $state("");
+  let customPromptEl = $state<HTMLTextAreaElement | null>(null);
   let panelSize = $state<CompanionPanelSize>("m");
   let panelRef = $state<HTMLDivElement | null>(null);
   let pos = $state<CompanionPanelPos>({ x: 16, y: 16 });
   let dragging = $state(false);
   let dragOffset = $state({ x: 0, y: 0 });
+  let lastDictationPromptId = $state<number | null>(null);
 
   const voiceCategories = ["dictée", "ia", "navigation"] as const;
 
@@ -113,6 +131,21 @@
       pos = loadCompanionPanelPos() ?? defaultCompanionPanelPos(panelSize);
       customPrompt = loadCustomPrompt();
     }
+  });
+
+  $effect(() => {
+    const frag = dictationToPrompt;
+    if (!frag || frag.id === lastDictationPromptId) return;
+    lastDictationPromptId = frag.id;
+    const piece = frag.text.trim();
+    if (!piece) {
+      onDictationToPromptConsumed?.();
+      return;
+    }
+    customPrompt = customPrompt.trim() ? `${customPrompt.trim()} ${piece}` : piece;
+    saveCustomPrompt(customPrompt);
+    onDictationToPromptConsumed?.();
+    queueMicrotask(() => customPromptEl?.focus());
   });
 
   function setPanelSize(size: CompanionPanelSize) {
@@ -202,7 +235,7 @@
         <h3 class="flex items-center gap-1.5 text-sm font-semibold">
           <span class="inline-flex text-accent-lavender">◈</span> Compagnon IA
         </h3>
-        <p class="text-[10px] text-text-muted">PTT · corrections · prompt · suggestions</p>
+        <p class="text-[10px] text-text-muted">Scribe pixel · skills · dictée</p>
       </div>
       <div class="flex shrink-0 items-center gap-1">
         <div
@@ -237,19 +270,24 @@
 
     <div class="flex min-h-0 flex-1 flex-col overflow-y-auto">
       <section class="border-b border-border bg-accent-lavender/10 px-3 py-2.5">
-        <p class="text-[10px] font-semibold uppercase tracking-wide text-accent-lavender">Prompt personnalisé</p>
+        <p class="text-[10px] font-semibold uppercase tracking-wide text-accent-lavender">
+          Prompt personnalisé
+        </p>
         <textarea
+          bind:this={customPromptEl}
           class="mt-1.5 w-full resize-none rounded-xl border border-accent-lavender/40 bg-surface px-2 py-1.5 text-xs leading-relaxed outline-none focus:ring-2 focus:ring-accent-lavender"
           rows="3"
-          placeholder="Ex. : Raccourcis en 2 phrases · Mets au formel · Extrais les tâches…"
+          placeholder="Ex. : Répare le Markdown… Dictez ici (PTT) quand le champ est focalisé."
           bind:value={customPrompt}
           oninput={() => saveCustomPrompt(customPrompt)}
           onkeydown={onCustomPromptKeydown}
+          onfocus={() => onCustomPromptFocusChange?.(true)}
+          onblur={() => onCustomPromptFocusChange?.(false)}
         ></textarea>
         <div class="mt-1.5 flex items-center justify-between gap-2">
           <p class="min-w-0 text-[10px] text-text-muted">
             Cible : <span class="font-medium text-text">{customTargetLabel}</span>
-            <span class="block text-[9px]">Ctrl+Entrée pour lancer</span>
+            <span class="block text-[9px]">Ctrl+Entrée — dictée PTT possible dans ce champ</span>
           </p>
           <button
             type="button"
@@ -259,6 +297,43 @@
           >
             Lancer →
           </button>
+        </div>
+
+        <p class="mt-3 text-[10px] font-semibold uppercase tracking-wide text-text-muted">
+          Skills rapides
+        </p>
+        <p class="mt-0.5 text-[9px] text-text-muted">
+          Raccourcis optionnels. Le prompt ci-dessus n'est jamais détourné.
+          {#if !ollamaAvailable}
+            {" "}Lien, points clés, tags, brief et plan demandent Ollama.
+          {/if}
+        </p>
+        <div class="mt-1.5 space-y-2">
+          {#each [
+            { key: "shape", label: "Forme" },
+            { key: "write", label: "Rédaction" },
+            { key: "connect", label: "Liens" },
+          ] as group (group.key)}
+            {@const skills = NOTE_SKILLS.filter((s) => s.group === group.key)}
+            {#if skills.length}
+              <p class="text-[9px] font-medium uppercase tracking-wide text-text-muted">{group.label}</p>
+              <div class="grid grid-cols-3 gap-1">
+                {#each skills as skill (skill.id)}
+                  <button
+                    type="button"
+                    class="rounded-lg border px-1.5 py-1 text-left transition hover:bg-accent-lavender/25 disabled:opacity-40 {skill.needsLlm
+                      ? 'border-border bg-surface'
+                      : 'border-accent-mint/40 bg-accent-mint/10'}"
+                    disabled={aiLoading || proactiveLoading}
+                    title={skill.hint}
+                    onclick={() => onSkill(skill.id)}
+                  >
+                    <span class="block text-[10px] font-semibold text-text">{skill.label}</span>
+                  </button>
+                {/each}
+              </div>
+            {/if}
+          {/each}
         </div>
       </section>
 
@@ -342,13 +417,24 @@
             id="note-context-field"
             class="mt-1 w-full resize-none rounded-xl border border-border bg-surface px-2 py-1.5 text-xs leading-relaxed outline-none focus:ring-1 focus:ring-accent-lavender"
             rows="2"
-            placeholder="Ex. : journal, recette, compte-rendu…"
+            placeholder="Ex. : runbook, journal, compte-rendu…"
             value={noteContext}
             oninput={(e) => onContextChange(e.currentTarget.value)}
           ></textarea>
         {/if}
       {/key}
 
+      <label class="mt-2 flex cursor-pointer items-start gap-2 text-[11px] text-text-muted">
+        <input
+          type="checkbox"
+          class="mt-0.5"
+          checked={buddyEnabled}
+          onchange={(e) => onBuddyToggle?.(e.currentTarget.checked)}
+        />
+        <span>
+          <strong class="text-text">Compagnon pixel</strong> — petit Scribe qui réagit à l'écriture (bulles locales)
+        </span>
+      </label>
       <label class="mt-2 flex cursor-pointer items-start gap-2 text-[11px] text-text-muted">
         <input
           type="checkbox"
@@ -406,7 +492,7 @@
 
       {#if suggestions.length === 0 && !aiLoading && !proactiveLoading && !proactiveStatus}
         <p class="text-xs text-text-muted">
-          Fautes corrigées automatiquement si l'option est active. Ici : suggestions de fond à valider.
+          Fautes corrigées automatiquement si l'option est active. Les skills proposent, elles n'écrivent pas toutes seules.
         </p>
       {/if}
 
@@ -428,6 +514,13 @@
               </p>
               <pre class="whitespace-pre-wrap font-sans text-[11px] leading-relaxed text-text">{s.proposedText}</pre>
             </div>
+          {:else if s.applyMode === "tags"}
+            <div class="mb-2 rounded-lg border border-accent-blue/40 bg-accent-blue/10 px-2 py-1.5">
+              <p class="mb-1 text-[9px] font-semibold uppercase tracking-wide text-accent-blue">
+                Tags frontmatter
+              </p>
+              <pre class="whitespace-pre-wrap font-sans text-[11px] leading-relaxed text-text">{s.proposedText}</pre>
+            </div>
           {:else if s.proposedText.trim() || s.originalText.trim()}
             <SuggestionDiff originalText={s.originalText} proposedText={s.proposedText} />
           {:else}
@@ -440,7 +533,11 @@
               disabled={!s.proposedText.trim()}
               onclick={() => onApply(s.id)}
             >
-              {s.applyMode === "append" || s.action === "summarize" ? "Ajouter en fin" : "Appliquer"}
+              {s.applyMode === "append" || s.action === "summarize"
+                ? "Ajouter en fin"
+                : s.applyMode === "tags"
+                  ? "Appliquer les tags"
+                  : "Appliquer"}
             </button>
             <button
               type="button"

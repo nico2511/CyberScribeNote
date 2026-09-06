@@ -2,13 +2,15 @@ mod commands;
 
 use commands::{
     create_folder, create_note, delete_item, export_note, get_app_config,
-    import_image, import_image_bytes, init_vault, list_vault, move_vault_item, ollama_delete_model,
+    import_image, import_image_bytes, init_vault, default_vault_path, set_vault_path,
+    list_vault, move_vault_item, ollama_delete_model,
     ollama_detect, ollama_install, ollama_pull_model, ollama_recommended_models,
     ollama_start_service, ollama_status, ollama_proactive_suggest, ollama_custom_prompt,
     ollama_summarize_note, ollama_transform_note, rag_query, rag_reindex, rag_status, read_note,
     save_app_config, search_vault, setup_voice, voice_check_deps,
     voice_get_status, voice_install_deps, voice_list_whisper_cache, voice_models_dir,
     voice_preload_whisper_model, voice_restart, voice_toggle, write_note, VoiceState,
+    fetch_page_meta,
 };
 
 use std::sync::{Arc, Mutex};
@@ -53,6 +55,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             init_vault,
+            default_vault_path,
+            set_vault_path,
             list_vault,
             read_note,
             write_note,
@@ -88,6 +92,7 @@ pub fn run() {
             voice_models_dir,
             voice_list_whisper_cache,
             voice_preload_whisper_model,
+            fetch_page_meta,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

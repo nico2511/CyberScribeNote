@@ -150,19 +150,24 @@ export function mergeBodyMarkdown(fullContent: string, newBody: string): string 
   return prefix + newBody.replace(/^\n+/, "");
 }
 
-/** Extrait les headings pour l'outline. */
+/** Extrait les headings pour l'outline (ignore les blocs de code). */
 export function extractOutline(markdown: string): { level: number; text: string; offset: number }[] {
   const { body, start } = noteBodyRange(markdown);
   const items: { level: number; text: string; offset: number }[] = [];
   let offset = start;
+  let inFence = false;
   for (const line of body.split("\n")) {
-    const m = /^(#{1,6})\s+(.+)$/.exec(line);
-    if (m) {
-      items.push({
-        level: m[1].length,
-        text: m[2].trim(),
-        offset,
-      });
+    if (/^(`{3,}|~{3,})/.test(line.trim())) {
+      inFence = !inFence;
+    } else if (!inFence) {
+      const m = /^(#{1,6})\s+(.+)$/.exec(line);
+      if (m) {
+        items.push({
+          level: m[1].length,
+          text: m[2].trim(),
+          offset,
+        });
+      }
     }
     offset += line.length + 1;
   }

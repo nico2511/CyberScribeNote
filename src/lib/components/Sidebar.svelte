@@ -4,6 +4,9 @@
   import type { VaultEntry } from "$lib/types";
   import { APP_VERSION } from "$lib/version";
   import { canMoveVaultItem, readVaultDragData, type VaultDragPayload } from "$lib/vault/tree";
+  import { getActiveVaultDrag } from "$lib/vault/activeDrag";
+  import { openUrl } from "@tauri-apps/plugin-opener";
+  import { APP_REPO_URL } from "$lib/version";
 
   interface Props {
     entries: VaultEntry[];
@@ -45,7 +48,8 @@
   }
 
   function handleRootDragOver(e: DragEvent) {
-    if (!draggingItem || !canMoveVaultItem(draggingItem, "")) return;
+    const source = draggingItem ?? getActiveVaultDrag();
+    if (!source || !canMoveVaultItem(source, "")) return;
     e.preventDefault();
     if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
     dropTarget = "";
@@ -53,10 +57,18 @@
 
   async function handleRootDrop(e: DragEvent) {
     e.preventDefault();
-    const source = readVaultDragData(e) ?? draggingItem;
+    const source = readVaultDragData(e) ?? draggingItem ?? getActiveVaultDrag();
     handleDragEnd();
     if (!source || !canMoveVaultItem(source, "")) return;
     await onMove(source.path, "");
+  }
+
+  async function openRepo() {
+    try {
+      await openUrl(APP_REPO_URL);
+    } catch {
+      /* ignore */
+    }
   }
 </script>
 
@@ -66,7 +78,7 @@
       <h1 class="text-sm font-semibold tracking-tight">CyberScribeNote</h1>
       <p class="text-xs text-text-muted">Vault local · v{APP_VERSION}</p>
     </div>
-    <PixelIcon name="note" size={16} class="rounded-lg bg-accent-lavender/30 p-1 text-accent-lavender" />
+    <PixelIcon name="note" size={16} class="sidebar-icon rounded-lg bg-surface p-1 text-text" />
   </div>
 
   <div class="flex gap-1 border-b border-border px-3 py-2">
@@ -133,7 +145,15 @@
     {/if}
   </div>
 
-  <div class="border-t border-border px-3 py-2">
+  <div class="border-t border-border px-3 py-2 space-y-1">
     <p class="truncate text-[10px] text-text-muted" title={vaultPath}>{vaultPath}</p>
+    <button
+      type="button"
+      class="w-full truncate rounded-lg px-1 py-0.5 text-left text-[10px] text-accent-blue underline-offset-2 hover:underline"
+      title={APP_REPO_URL}
+      onclick={openRepo}
+    >
+      GitHub · CyberScribeNote
+    </button>
   </div>
 </aside>

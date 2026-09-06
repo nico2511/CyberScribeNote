@@ -3,6 +3,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { openUrl } from "@tauri-apps/plugin-opener";
+  import { open as openDialog } from "@tauri-apps/plugin-dialog";
   import type {
     AppConfig,
     OllamaDetect,
@@ -13,17 +14,19 @@
     VoiceStatus,
     WhisperCacheEntry,
   } from "$lib/types";
-  import { APP_NAME, APP_VERSION } from "$lib/version";
+  import { APP_BTC_DONATION, APP_NAME, APP_REPO_URL, APP_VERSION } from "$lib/version";
   import type { RagStatus } from "$lib/ai/rag";
   import { notify } from "$lib/stores/notifications";
 
   interface Props {
     open: boolean;
+    vaultPath?: string;
     onClose: () => void;
     onOllamaUpdated: (status: OllamaStatus) => void;
+    onVaultChanged?: (path: string) => void;
   }
 
-  let { open, onClose, onOllamaUpdated }: Props = $props();
+  let { open, vaultPath = "", onClose, onOllamaUpdated, onVaultChanged }: Props = $props();
 
   let detect = $state<OllamaDetect | null>(null);
   let status = $state<OllamaStatus | null>(null);
@@ -37,7 +40,10 @@
     whisperComputeType: "int8",
     whisperProfile: "fast",
     maxRecordSeconds: 90,
+    vaultPath: null,
   });
+  let defaultVault = $state("");
+  let currentVault = $state("");
   let voiceDeps = $state<VoiceDepsStatus | null>(null);
   let voiceStatus = $state<VoiceStatus | null>(null);
   let whisperCache = $state<WhisperCacheEntry[]>([]);
@@ -65,8 +71,61 @@
   async function loadConfigFast() {
     try {
       config = await invoke<AppConfig>("get_app_config");
+      defaultVault = await invoke<string>("default_vault_path");
+      currentVault = vaultPath || (await invoke<string>("init_vault"));
     } catch {
       /* garde les valeurs par défaut */
+    }
+  }
+
+  $effect(() => {
+    if (vaultPath) currentVault = vaultPath;
+  });
+
+  async function pickVaultFolder() {
+    busy = true;
+    error = "";
+    message = "";
+    try {
+      const selected = await openDialog({
+        directory: true,
+        multiple: false,
+        title: "Choisir le dossier du vault",
+        defaultPath: currentVault || defaultVault || undefined,
+      });
+      if (!selected || Array.isArray(selected)) return;
+      const next = await invoke<string>("set_vault_path", { path: selected });
+      currentVault = next;
+      config.vaultPath = next;
+      message = `Vault : ${next}`;
+      onVaultChanged?.(next);
+      notify({
+        kind: "success",
+        title: "Vault",
+        message: "Emplacement mis à jour.",
+        key: "vault-path",
+      });
+    } catch (e) {
+      error = String(e);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function resetVaultFolder() {
+    busy = true;
+    error = "";
+    message = "";
+    try {
+      const next = await invoke<string>("set_vault_path", { path: null });
+      currentVault = next;
+      config.vaultPath = null;
+      message = `Vault par défaut : ${next}`;
+      onVaultChanged?.(next);
+    } catch (e) {
+      error = String(e);
+    } finally {
+      busy = false;
     }
   }
 
@@ -481,12 +540,43 @@
           {/if}
         </section>
 
+        <!-- Vault -->
+        <section class="space-y-3 border-t border-border pt-4">
+          <h3 class="text-sm font-semibold">Vault</h3>
+          <p class="text-[11px] text-text-muted leading-relaxed">
+            Dossier Markdown local. Le changement n'efface pas l'ancien emplacement.
+          </p>
+          <p class="break-all rounded-xl border border-border bg-surface-muted px-3 py-2 text-[11px]" title={currentVault}>
+            {currentVault || "…"}
+          </p>
+          <div class="flex gap-2">
+            <button
+              type="button"
+              class="flex-1 rounded-2xl bg-accent-lavender/40 py-2 text-xs font-medium hover:bg-accent-lavender/60 disabled:opacity-50"
+              disabled={busy}
+              onclick={pickVaultFolder}
+            >
+              Changer…
+            </button>
+            <button
+              type="button"
+              class="rounded-2xl border border-border px-3 py-2 text-xs hover:bg-surface-muted disabled:opacity-50"
+              disabled={busy}
+              title={defaultVault}
+              onclick={resetVaultFolder}
+            >
+              Défaut
+            </button>
+          </div>
+        </section>
+
         <!-- RAG -->
         <section class="space-y-3 border-t border-border pt-4">
           <h3 class="text-sm font-semibold">RAG · recherche sémantique</h3>
           <p class="text-[11px] text-text-muted leading-relaxed">
             Indexe le vault avec <code class="text-accent-blue">nomic-embed-text</code> pour enrichir
-            résumé, reformulation et prompts custom avec des extraits d'autres notes.
+            les résumés. Les prompts custom et la reformulation restent ancrés sur la note
+            ouverte (sauf si le prompt demande explicitement les autres notes).
           </p>
           <div class="rounded-2xl border border-border bg-surface-muted p-3 text-xs space-y-1">
             <div class="flex justify-between">
@@ -653,8 +743,22 @@
           <p class="rounded-xl bg-danger/10 px-3 py-2 text-xs text-danger">{error}</p>
         {/if}
 
-        <footer class="border-t border-border pt-4 text-center text-[10px] text-text-muted">
-          {APP_NAME} v{APP_VERSION}
+        <footer class="space-y-3 border-t border-border pt-4 text-center text-[10px] text-text-muted">
+          <p>{APP_NAME} v{APP_VERSION}</p>
+          <button
+            type="button"
+            class="text-accent-blue underline-offset-2 hover:underline"
+            onclick={() => openUrl(APP_REPO_URL)}
+          >
+            {APP_REPO_URL}
+          </button>
+          <div class="rounded-xl border border-border bg-surface-muted px-3 py-2 text-left">
+            <p class="font-medium text-text">Soutenir le projet</p>
+            <p class="mt-1 text-text-muted">Bitcoin (BTC)</p>
+            <p class="mt-0.5 break-all font-mono text-[9px] text-text" title={APP_BTC_DONATION}>
+              {APP_BTC_DONATION}
+            </p>
+          </div>
         </footer>
       </div>
     </div>

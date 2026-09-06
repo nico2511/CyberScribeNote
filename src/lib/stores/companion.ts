@@ -1,6 +1,7 @@
 const PROACTIVE_KEY = "csn-companion-proactive";
 const AUTO_TYPO_KEY = "csn-companion-auto-typo";
 const AUTO_SUMMARY_KEY = "csn-companion-auto-summary";
+const BUDDY_KEY = "csn-companion-buddy";
 const PANEL_POS_KEY = "csn-companion-panel-pos";
 const PANEL_SIZE_KEY = "csn-companion-panel-size";
 const CUSTOM_PROMPT_KEY = "csn-companion-custom-prompt";
@@ -51,6 +52,17 @@ export function loadAutoSummarizeEnabled(): boolean {
 
 export function saveAutoSummarizeEnabled(enabled: boolean) {
   localStorage.setItem(AUTO_SUMMARY_KEY, enabled ? "1" : "0");
+}
+
+/** Petit compagnon pixel (réactionsctions locales). Opt-out possible. */
+export function loadBuddyEnabled(): boolean {
+  if (typeof localStorage === "undefined") return true;
+  const raw = localStorage.getItem(BUDDY_KEY);
+  return raw === null ? true : raw === "1";
+}
+
+export function saveBuddyEnabled(enabled: boolean) {
+  localStorage.setItem(BUDDY_KEY, enabled ? "1" : "0");
 }
 
 export function loadCompanionPanelPos(): CompanionPanelPos | null {

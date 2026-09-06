@@ -12,6 +12,66 @@ export interface VoiceCommandInfo {
 /** Catalogue des commandes vocales reconnues (préfixe « Scribe, … »). */
 export const VOICE_COMMANDS: VoiceCommandInfo[] = [
   {
+    phrase: "Scribe, structure",
+    description: "Répare le Markdown (titres, blocs de code) sans changer le fond",
+    category: "ia",
+    requiresNote: true,
+    requiresOllama: false,
+  },
+  {
+    phrase: "Scribe, sommaire",
+    description: "Insère une table des matières depuis les titres",
+    category: "ia",
+    requiresNote: true,
+  },
+  {
+    phrase: "Scribe, plan",
+    description: "Propose un plan de conception en fin de note (n'écrase rien)",
+    category: "ia",
+    requiresNote: true,
+    requiresOllama: true,
+  },
+  {
+    phrase: "Scribe, lien",
+    description: "Enrichit une URL de la note en brouillon (titre / description)",
+    category: "ia",
+    requiresNote: true,
+    requiresOllama: true,
+  },
+  {
+    phrase: "Scribe, points clés",
+    description: "Extrait idées essentielles et tâches déjà présentes",
+    category: "ia",
+    requiresNote: true,
+    requiresOllama: true,
+  },
+  {
+    phrase: "Scribe, tags",
+    description: "Propose des tags YAML pour le frontmatter",
+    category: "ia",
+    requiresNote: true,
+    requiresOllama: true,
+  },
+  {
+    phrase: "Scribe, template",
+    description: "Propose un modèle (daily, CR, lecture, projet)",
+    category: "ia",
+    requiresNote: true,
+  },
+  {
+    phrase: "Scribe, brief",
+    description: "Résumé ultra-court (2–3 phrases) en fin de note",
+    category: "ia",
+    requiresNote: true,
+    requiresOllama: true,
+  },
+  {
+    phrase: "Scribe, liées",
+    description: "Liste des notes du vault proches (RAG)",
+    category: "ia",
+    requiresNote: true,
+  },
+  {
     phrase: "Scribe, résume",
     description: "Ajoute un résumé en fin de note via Ollama",
     category: "ia",

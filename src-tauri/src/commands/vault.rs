@@ -44,6 +44,17 @@ pub struct SearchResult {
 }
 
 pub fn vault_root() -> Result<PathBuf, String> {
+    let cfg = crate::commands::config::load_config();
+    if let Some(custom) = cfg.vault_path.as_deref() {
+        let trimmed = custom.trim();
+        if !trimmed.is_empty() {
+            let path = PathBuf::from(trimmed);
+            if path.is_absolute() {
+                return Ok(path);
+            }
+            return Err("Le chemin du vault doit être absolu.".into());
+        }
+    }
     let base = dirs::document_dir().ok_or("Impossible de trouver le dossier Documents")?;
     Ok(base.join("CyberScribeNote").join("vault"))
 }
@@ -249,6 +260,47 @@ fn sanitize_name(name: &str) -> Result<String, String> {
 
 #[tauri::command]
 pub fn init_vault() -> Result<String, String> {
+    let root = ensure_vault()?;
+    Ok(root.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn default_vault_path() -> Result<String, String> {
+    let base = dirs::document_dir().ok_or("Impossible de trouver le dossier Documents")?;
+    Ok(base
+        .join("CyberScribeNote")
+        .join("vault")
+        .to_string_lossy()
+        .to_string())
+}
+
+/// Change le dossier vault (absolu). Crée le dossier s'il n'existe pas.
+#[tauri::command]
+pub fn set_vault_path(path: Option<String>) -> Result<String, String> {
+    let mut cfg = crate::commands::config::load_config();
+    match path {
+        None => {
+            cfg.vault_path = None;
+        }
+        Some(p) => {
+            let trimmed = p.trim().to_string();
+            if trimmed.is_empty() {
+                cfg.vault_path = None;
+            } else {
+                let pb = PathBuf::from(&trimmed);
+                if !pb.is_absolute() {
+                    return Err("Le chemin du vault doit être absolu.".into());
+                }
+                fs::create_dir_all(&pb).map_err(|e| format!("Impossible de créer le dossier : {e}"))?;
+                // Vérifie qu'on peut écrire
+                let probe = pb.join(".cyberscribe-write-test");
+                fs::write(&probe, b"ok").map_err(|e| format!("Dossier non accessible en écriture : {e}"))?;
+                let _ = fs::remove_file(&probe);
+                cfg.vault_path = Some(trimmed);
+            }
+        }
+    }
+    crate::commands::config::save_app_config(cfg)?;
     let root = ensure_vault()?;
     Ok(root.to_string_lossy().to_string())
 }

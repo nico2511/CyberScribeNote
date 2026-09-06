@@ -10,3 +10,6 @@ vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 /src-tauri/target
 .vscode/
+**/__pycache__/
+voice/_test_stdin.txt
+*.pyc

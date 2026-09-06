@@ -1,28 +1,38 @@
 # CyberScribeNote
 
-Application de prise de notes **100 % locale**, offline-first, avec IA via [Ollama](https://ollama.com) et design pastel minimaliste.
+Application de prise de notes **100 % locale**, offline-first, avec IA via [Ollama](https://ollama.com), compagnon pixel **Scribe**, skills de conception de notes et design pastel minimaliste.
+
+Dépôt : [github.com/nico2511/CyberScribeNote](https://github.com/nico2511/CyberScribeNote)
 
 Basé sur le plan [CyberScribe Notes](Docs/CyberScribe_Notes_Plan.md) et inspiré de [CyberScribe](https://github.com/nico2511/CyberScribe) pour la partie vocale.
 
-## Fonctionnalités (v0.2.x)
+## Fonctionnalités (v0.3.x)
 
-- Vault Markdown dans `Documents/CyberScribeNote/vault`
-- Arborescence dossiers / notes — création, suppression, **glisser-déposer** pour classer
+- Vault Markdown configurable (défaut `Documents/CyberScribeNote/vault` — changeable dans Réglages)
+- Arborescence dossiers / notes — création, suppression, **glisser-déposer** (poignée ⠿) pour classer
 - **Éditeur TipTap WYSIWYG** (Markdown sérialisé) + outline / TOC cliquable, wikilinks `[[Note]]`
-- Frontmatter YAML : tags éditables, date `updated` à la sauvegarde
-- Thèmes **Light Pastel** et **Dark Pastel** + icônes pixel 16×16
+- Frontmatter YAML : tags (skill Tags), date `updated` à la sauvegarde
+- Thèmes **Light Pastel** et **Dark Pastel** + icône app Scribe pixel
 - Recherche rapide **Ctrl+T**
-- **Compagnon IA** : suggestions proactives et manuelles (appliquer / ignorer) avec contexte de note
-- Correction typo locale automatique (sans déplacer le curseur) + diff des suggestions
-- Résumé, reformulation, correction et traduction via Ollama
-- **Résumé automatique** opt-in (idle / changement de note)
-- RAG local optionnel (`nomic-embed-text` + `rag_index.json`) — Réglages / indexation
-- Panneau **Réglages** (Ctrl+,) : Ollama, voix PTT, modèles Whisper
-- Images à la position du curseur (`_media/` par note) + redimensionnement
-- **Dictée vocale push-to-talk** (hotkey configurable) : worker Python long-lived, heartbeat, arrêt propre à la fermeture
-- Commandes vocales (pendant le PTT) : « Scribe, ouvre / cherche / résume / reformule / corrige / traduis »
-- Single-instance (une seule fenêtre)
-- Export d'une note en `.md`
+- **Compagnon IA** : prompt custom (dictée PTT dans le champ), skills groupées, suggestions appliquer / ignorer
+- Skills Vague 1 : Structurer, Sommaire, Lien (fetch page / README GitHub), Points clés, Tags, Template, Brief, Plan, Notes liées (RAG), Wikiliens
+- **Scribe** (buddy pixel) : tips contextuels (lien seul, fences, notes liées…)
+- Correction typo locale + résumé / reformulation / traduction via Ollama
+- RAG local optionnel (`nomic-embed-text`) — Réglages / indexation
+- Panneau **Réglages** (Ctrl+,) : vault, Ollama, voix PTT, modèles Whisper
+- Images à la position du curseur (`_media/` par note)
+- **Dictée vocale push-to-talk** + commandes « Scribe, … » (skills incluses)
+- Single-instance · Export `.md`
+
+## Soutenir / dons
+
+Si le projet vous est utile, vous pouvez soutenir via Bitcoin (BTC) :
+
+```
+bc1pt20cczcmvukrny4pru3x2nc522tk2sectlu22d42q2ltyau7t66suh6kqx
+```
+
+(Adresse également affichée dans Réglages.)
 
 ## Prérequis
 
@@ -62,7 +72,7 @@ cd src-tauri && cargo test
 npm run tauri build
 ```
 
-Sortie actuelle : `src-tauri/target/release/cyberscribe-note.exe`  
+Sortie : `src-tauri/target/release/cyberscribe-note.exe`  
 *(bundle / installateur NSIS volontairement désactivé pour l’instant — `bundle.active: false`.)*
 
 ## Troubleshooting
@@ -70,13 +80,15 @@ Sortie actuelle : `src-tauri/target/release/cyberscribe-note.exe`
 ### Voix / « Scribe, … »
 1. Réglages → Voix → **Appliquer la config voix**, attendre « Dictée prête ».
 2. PTT : hotkey → parler → rappuyer. Les commandes se disent **pendant** l’enregistrement.
-3. Note ouverte + non vide pour les actions IA (`corrige`, `résume`…).
-4. Si échec : ouvrir `Documents/CyberScribeNote/voice_worker.log` (ligne `Transcription done …`).
-5. Heartbeat : toast « Worker vocal sans réponse » → Appliquer la config voix.
+3. Prompt custom : focus le champ dans le Compagnon, puis dictez (insertion dans le prompt).
+4. Note ouverte + non vide pour les actions IA (`corrige`, `résume`…).
+5. Si échec : ouvrir `Documents/CyberScribeNote/voice_worker.log`.
 
-### Curseur qui saute
-- L’auto-correction ne doit plus trimmer les espaces ni reset le caret.
-- Si ça revient : désactiver temporairement « correction auto » dans le Compagnon pour isoler.
+### Glisser-déposer notes
+- Utilisez la poignée **⠿** à gauche de la note / du dossier, déposez sur un dossier (ou « racine »).
+
+### Enrichir un lien GitHub
+- Skill **Lien** : récupère le README brut (`raw.githubusercontent.com`) quand c’est un dépôt GitHub.
 
 ### Ollama
 - Réglages → démarrer le service / tirer un modèle.
@@ -88,15 +100,15 @@ Sortie actuelle : `src-tauri/target/release/cyberscribe-note.exe`
 |--------|-------------|
 | Desktop | Tauri 2 (+ single-instance) |
 | Frontend | Svelte 5 + TypeScript + Tailwind CSS 4 + TipTap |
-| Backend | Rust (FS vault, Ollama HTTP, RAG) |
+| Backend | Rust (FS vault, Ollama HTTP, RAG, fetch web) |
 | Voix | Python sidecar (faster-whisper), push-to-talk |
 | Stockage | Fichiers `.md` + médias locaux |
 
-## Roadmap (plan correctif)
+## Roadmap
 
-1. **Court terme** — Stabiliser voix / curseur / sidecar / tests / README *(en cours)*
-2. **Moyen terme** — Outline + wikilinks + frontmatter + UX erreurs + cross-platform
-3. **Phase 2** — RAG embeddings abouti, templates, graph, puis bundling NSIS + updater
+1. ~~Vague 1 skills + buddy + enrich liens~~ (v0.3)
+2. Templates / résumé multi-niveaux affinés, graph de notes
+3. Bundling NSIS + updater
 
 Détail : [Docs/CyberScribe_Notes_Plan.md](Docs/CyberScribe_Notes_Plan.md).
 

@@ -7,11 +7,88 @@ use tauri::{AppHandle, Emitter};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
+const FAITHFUL_SYSTEM: &str = "Tu es un éditeur fidèle dans une application de notes. \
+Tu transformes uniquement le texte fourni par l'utilisateur. \
+Interdit : inventer un autre document, changer de sujet, produire une recette, \
+un exemple générique, du lorem ipsum, ou t'appuyer sur un extrait hors sujet. \
+Conserve tous les faits, noms, chemins, commandes, URLs et extraits de code.";
+
 #[derive(Debug, Serialize)]
 struct OllamaRequest {
     model: String,
     prompt: String,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    system: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    options: Option<OllamaGenOptions>,
+}
+
+#[derive(Debug, Serialize)]
+struct OllamaGenOptions {
+    temperature: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top_p: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    num_ctx: Option<u32>,
+}
+
+struct GenerateParams {
+    temperature: f32,
+    system: Option<String>,
+}
+
+fn generate_params(kind: &str) -> GenerateParams {
+    match kind {
+        "correct" | "proactive" => GenerateParams {
+            temperature: 0.0,
+            system: Some(FAITHFUL_SYSTEM.into()),
+        },
+        "custom" => GenerateParams {
+            temperature: 0.1,
+            system: Some(FAITHFUL_SYSTEM.into()),
+        },
+        "translate" => GenerateParams {
+            temperature: 0.15,
+            system: Some(FAITHFUL_SYSTEM.into()),
+        },
+        "reformulate" => GenerateParams {
+            temperature: 0.25,
+            system: Some(FAITHFUL_SYSTEM.into()),
+        },
+        "summarize" => GenerateParams {
+            temperature: 0.3,
+            system: Some(FAITHFUL_SYSTEM.into()),
+        },
+        _ => GenerateParams {
+            temperature: 0.2,
+            system: Some(FAITHFUL_SYSTEM.into()),
+        },
+    }
+}
+
+fn looks_like_format_instruction(instruction: &str) -> bool {
+    let t = instruction.to_lowercase();
+    [
+        "markdown",
+        "balise",
+        "interprete",
+        "interprète",
+        "mise en forme",
+        "mettre en forme",
+        "formater",
+        "formatage",
+        "outline",
+        "table des",
+        "wikilink",
+        "titre",
+        "bloc de code",
+        "code fence",
+        "docker",
+        "compose",
+    ]
+    .iter()
+    .any(|k| t.contains(k))
 }
 
 #[derive(Debug, Deserialize)]
@@ -485,11 +562,15 @@ fn find_ollama_app() -> Option<std::path::PathBuf> {
         })
 }
 
-pub(crate) async fn ollama_generate(prompt: String, model: Option<String>) -> Result<String, String> {
+async fn ollama_generate_with(
+    prompt: String,
+    model: Option<String>,
+    params: GenerateParams,
+) -> Result<String, String> {
     let config = load_config();
     let host = config.ollama_host.trim_end_matches('/').to_string();
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
+        .timeout(std::time::Duration::from_secs(180))
         .build()
         .map_err(|e| e.to_string())?;
 
@@ -499,6 +580,12 @@ pub(crate) async fn ollama_generate(prompt: String, model: Option<String>) -> Re
         model,
         prompt,
         stream: false,
+        system: params.system,
+        options: Some(OllamaGenOptions {
+            temperature: params.temperature,
+            top_p: Some(0.9),
+            num_ctx: Some(8192),
+        }),
     };
 
     let response = client
@@ -531,16 +618,32 @@ pub async fn ollama_custom_prompt(
 
     let context_block = format_note_context(note_context.as_deref());
     let rag_block = format_rag_block(rag_context.as_deref());
+    let format_rules = if looks_like_format_instruction(instruction) {
+        "\nRègles Markdown (obligatoires) :\n\
+         - Répare uniquement la structure (titres, listes, liens, blocs de code).\n\
+         - Ne change pas le sujet ni le fond : pas d'exemple générique à la place du texte.\n\
+         - Conserve INTÉGRALEMENT chaque ligne à l'intérieur des blocs ``` (yaml, chemins, env).\n\
+         - N'ouvre/ferme JAMAIS une fence au milieu d'un compose — un service = un seul bloc.\n\
+         - Titre vide `##` → déduis le nom depuis le service docker du bloc suivant.\n\
+         - Fence nue ``` avec version/services/image → ```yaml.\n\
+         - Supprime les stubs `##` + fence vides en fin de fichier.\n\
+         - Table des matières / outline = liste de liens Markdown HORS des blocs de code.\n\
+         - Un résumé éventuel = section séparée, jamais collé en fin de ligne.\n\
+         - Si tu entoures la réponse, une seule fence ```markdown autour du document entier.\n"
+    } else {
+        "\nNe remplace pas le texte par un autre document. Conserve le sujet et les informations.\n"
+    };
     let prompt = format!(
-        "Tu es un assistant de prise de notes.{context_block}{rag_block}\n\n\
+        "Tu édites une note existante.{context_block}{rag_block}\n\
+         {format_rules}\n\
          Consigne de l'utilisateur :\n{instruction}\n\n\
-         Texte à traiter :\n---\n{content}\n---\n\n\
-         Réponds uniquement avec le résultat demandé, sans introduction ni commentaire."
+         Texte à traiter (source unique de vérité) :\n---\n{content}\n---\n\n\
+         Réponds uniquement avec le texte transformé, sans introduction ni commentaire."
     );
 
-    ollama_generate(prompt, model)
+    ollama_generate_with(prompt, model, generate_params("custom"))
         .await
-        .map(|raw| sanitize_ai_response(&raw, "reformulate", &content))
+        .map(|raw| sanitize_ai_response(&raw, "custom", &content))
 }
 
 #[tauri::command]
@@ -553,11 +656,13 @@ pub async fn ollama_summarize_note(
     let context_block = format_note_context(note_context.as_deref());
     let rag_block = format_rag_block(rag_context.as_deref());
     let prompt = format!(
-        "Tu es un assistant de prise de notes.{context_block}{rag_block} \
-         Résume le passage suivant en français, en 3 à 5 phrases concises. \
-         Ne répète pas le titre. N'invente pas à partir du RAG si le passage suffit.\n\n---\n{content}\n---"
+        "Tu es un assistant de prise de notes.{context_block}{rag_block}\n\
+         Résume UNIQUEMENT le passage ci-dessous en français, en 3 à 5 phrases concises.\n\
+         Règles : pas de « Voici… », pas de liste à puces, pas de méta, pas de titre.\n\
+         Ne répète pas le titre. N'utilise le RAG que s'il éclaire CE passage ;\n\
+         n'importe jamais un autre sujet.\n\n---\n{content}\n---"
     );
-    ollama_generate(prompt, model).await
+    ollama_generate_with(prompt, model, generate_params("summarize")).await
 }
 
 #[tauri::command]
@@ -573,7 +678,9 @@ pub async fn ollama_transform_note(
     let rag_block = format_rag_block(rag_context.as_deref());
     let prompt = match action.as_str() {
         "reformulate" => format!(
-            "Reformule ce texte en français, plus clair et fluide, sans changer le sens.{context_block}{rag_block} \
+            "Reformule ce texte en français, plus clair et fluide, sans changer le SENS ni le SUJET.\
+             {context_block}{rag_block} \
+             N'invente rien, n'importe aucun autre thème. \
              Réponds uniquement avec le texte reformulé.\n\n{content}"
         ),
         "correct" => format!(
@@ -612,22 +719,66 @@ pub async fn ollama_transform_note(
         _ => return Err(format!("Action IA inconnue : {action}")),
     };
     let _ = rag_block; // translate ignore le RAG volontairement
-    ollama_generate(prompt, model)
+    let kind = if action.starts_with("translate") {
+        "translate"
+    } else {
+        action.as_str()
+    };
+    ollama_generate_with(prompt, model, generate_params(kind))
         .await
         .map(|raw| sanitize_ai_response(&raw, &action, &content))
 }
 
-fn sanitize_ai_response(raw: &str, action: &str, original: &str) -> String {
-    let mut text = raw.trim().to_string();
-
-    if text.starts_with("```") {
-        text = text
-            .lines()
-            .skip(1)
-            .take_while(|l| !l.trim().starts_with("```"))
-            .collect::<Vec<_>>()
-            .join("\n");
+/// Unwrap only a whole-document ```markdown wrapper, never the first inner code fence.
+fn unwrap_outer_markdown_fence(text: &str) -> String {
+    let trimmed = text.trim();
+    if !trimmed.starts_with("```") {
+        return trimmed.to_string();
     }
+    let lines: Vec<&str> = trimmed.lines().collect();
+    if lines.is_empty() {
+        return trimmed.to_string();
+    }
+    let lang = lines[0]
+        .trim()
+        .trim_start_matches('`')
+        .trim()
+        .to_lowercase();
+    let is_wrapper = lang.is_empty()
+        || lang == "markdown"
+        || lang == "md"
+        || lang == "text"
+        || lang == "txt"
+        || lang == "plaintext";
+    if !is_wrapper {
+        return trimmed.to_string();
+    }
+    let last_nonempty = lines.iter().rposition(|l| !l.trim().is_empty());
+    let Some(end) = last_nonempty else {
+        return trimmed.to_string();
+    };
+    if end < 1 || !lines[end].trim().starts_with("```") {
+        return trimmed.to_string();
+    }
+    let mut next = lines[1..end].join("\n").trim().to_string();
+    if fence_unclosed(&next) {
+        next.push_str("\n```");
+    }
+    next
+}
+
+fn fence_unclosed(md: &str) -> bool {
+    let mut open = false;
+    for line in md.lines() {
+        if line.trim().starts_with("```") {
+            open = !open;
+        }
+    }
+    open
+}
+
+fn sanitize_ai_response(raw: &str, action: &str, original: &str) -> String {
+    let mut text = unwrap_outer_markdown_fence(raw);
 
     let lower = text.to_lowercase();
     for marker in [
@@ -647,7 +798,14 @@ fn sanitize_ai_response(raw: &str, action: &str, original: &str) -> String {
         }
     }
 
-    text = text.trim().trim_matches('"').trim_matches('«').trim_matches('»').to_string();
+    if action != "custom" {
+        text = text
+            .trim()
+            .trim_matches('"')
+            .trim_matches('«')
+            .trim_matches('»')
+            .to_string();
+    }
 
     if action == "correct" {
         let orig_words = original.split_whitespace().count();
@@ -715,7 +873,7 @@ pub async fn ollama_proactive_suggest(
          Pas de markdown, pas de texte hors JSON."
     );
 
-    let raw = ollama_generate(prompt, model).await?;
+    let raw = ollama_generate_with(prompt, model, generate_params("proactive")).await?;
     let mut parsed = parse_proactive_response(&raw);
     if parsed.suggest {
         if let Some(raw_proposed) = parsed.proposed.take() {
@@ -851,8 +1009,47 @@ fn format_note_context(note_context: Option<&str>) -> String {
 
 fn format_rag_block(rag_context: Option<&str>) -> String {
     match rag_context.map(str::trim).filter(|s| !s.is_empty()) {
-        Some(rag) => format!("\n\n{rag}\n"),
+        Some(rag) => format!(
+            "\n\nExtraits d'autres notes (optionnels). IGNORE-LES s'ils parlent d'un autre sujet que le texte à traiter.\n{rag}\n"
+        ),
         None => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unwrap_keeps_yaml_fence_as_content() {
+        let raw = "```yaml\nservices:\n  web:\n    image: nginx\n```\n\n# Suite";
+        assert_eq!(unwrap_outer_markdown_fence(raw), raw);
+    }
+
+    #[test]
+    fn unwrap_outer_markdown_preserves_inner_code() {
+        let raw = "```markdown\n# Docker\n\n```yaml\nservices:\n  web:\n```\n```";
+        let out = unwrap_outer_markdown_fence(raw);
+        assert!(out.contains("# Docker"));
+        assert!(out.contains("```yaml"));
+        assert!(out.contains("image") || out.contains("services:"));
+    }
+
+    #[test]
+    fn format_instruction_detects_markdown() {
+        assert!(looks_like_format_instruction(
+            "Mets en forme correctement les balises markdown"
+        ));
+        assert!(!looks_like_format_instruction("Raccourcis en deux phrases"));
+    }
+
+    #[test]
+    fn custom_sanitize_does_not_chop_inner_fences() {
+        let raw = "```markdown\n# Stacks\n\n- [web](#web)\n\n```yaml\nservices:\n  web:\n    image: nginx\n```\n```";
+        let out = sanitize_ai_response(raw, "custom", "services web nginx");
+        assert!(out.contains("```yaml"));
+        assert!(out.contains("# Stacks"));
+        assert!(out.contains("- [web](#web)"));
     }
 }
 

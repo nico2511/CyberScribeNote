@@ -1,6 +1,7 @@
 import type { AiAction } from "$lib/types";
 import type { TranslateLang } from "$lib/ai/languages";
 import { parseTranslateVoiceLang } from "$lib/ai/languages";
+import { matchSkillFromText, type SkillId } from "$lib/ai/skills";
 
 export interface VoiceCommand {
   kind: "ai";
@@ -29,12 +30,18 @@ export interface VoiceUnknown {
   text: string;
 }
 
+export interface VoiceSkill {
+  kind: "skill";
+  skillId: SkillId;
+}
+
 export type ParsedVoice =
   | VoiceCommand
   | VoiceSearch
   | VoiceOpen
   | VoiceInsert
-  | VoiceUnknown;
+  | VoiceUnknown
+  | VoiceSkill;
 
 const FILLER_RE =
   /^(?:(?:euh|heu|eu|bah|ben|bon|alors|ok|okay|ouais|oui|ouai|hey|salut|hello|cest|c est|cet)\s+)*/;
@@ -103,6 +110,9 @@ function matchCommand(
     const translateTo = parseTranslateVoiceLang(langRaw || "anglais") ?? "en";
     return { kind: "ai", action: "translate", translateTo };
   }
+
+  const skillId = matchSkillFromText(rest);
+  if (skillId) return { kind: "skill", skillId };
 
   if (/^(?:re)?cherch/.test(rest)) {
     const query =

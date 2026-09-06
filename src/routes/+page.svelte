@@ -9,6 +9,7 @@
   import SettingsPanel from "$lib/components/SettingsPanel.svelte";
   import VoiceOverlay from "$lib/components/VoiceOverlay.svelte";
   import AiCompanionPanel from "$lib/components/AiCompanionPanel.svelte";
+  import ScribeBuddy from "$lib/components/ScribeBuddy.svelte";
   import { applyTheme, loadTheme, saveTheme, toggleTheme } from "$lib/stores/theme";
   import type { ParagraphSpan } from "$lib/note/paragraph";
   import {
@@ -18,6 +19,8 @@
     saveAutoTypoFixEnabled,
     loadAutoSummarizeEnabled,
     saveAutoSummarizeEnabled,
+    loadBuddyEnabled,
+    saveBuddyEnabled,
   } from "$lib/stores/companion";
   import { autoFixAllTypoLines, tryAutoFixSpan, lineNeedsAiTypoFix } from "$lib/ai/autoTypo";
   import { sanitizeAiOutput } from "$lib/ai/sanitize";
@@ -30,7 +33,7 @@
   import { parseVoiceTranscript } from "$lib/voice/keywords";
   import { replaceTextRange, type AiActionRequest, type TextSelection } from "$lib/voice/commands";
   import { mapCaretThroughReplace, locateSelectionInContent } from "$lib/note/caret";
-  import { resolveWikilink } from "$lib/vault/wikilinks";
+  import { resolveWikilink, flattenNotes, noteStem } from "$lib/vault/wikilinks";
   import {
     extractExistingSummary,
     formatSummaryAppendix,
@@ -38,7 +41,25 @@
     translateLangLabel,
   } from "$lib/ai/languages";
   import { fetchRagContext } from "$lib/ai/rag";
-  import { noteBody, parseNoteContext, setNoteContext, ensureVisibleContextBlock, touchUpdatedDate } from "$lib/note/frontmatter";
+  import { repairMarkdownProposal } from "$lib/markdown/repair";
+  import {
+    getSkill,
+    runSkillLocal,
+    isEmptyLlmAppendix,
+    parseTagsProposal,
+    formatEnrichContext,
+    extractUrls,
+    type SkillId,
+  } from "$lib/ai/skills";
+  import { instructionWantsVaultContext, isGroundedAppendix, isGroundedTransform } from "$lib/ai/grounding";
+  import {
+    scanBuddyTip,
+    moodFromActivity,
+    type BuddyMood,
+    type BuddyTip,
+    type BuddyAction,
+  } from "$lib/ai/scribeBuddy";
+  import { noteBody, parseNoteContext, setNoteContext, ensureVisibleContextBlock, touchUpdatedDate, setFrontmatterTags } from "$lib/note/frontmatter";
   import { mergeBodyMarkdown } from "$lib/markdown/bridge";
   import PixelIcon from "$lib/components/PixelIcon.svelte";
   import { dismissToast, notify } from "$lib/stores/notifications";
@@ -82,6 +103,16 @@
   let proactiveEnabled = $state(false);
   let autoTypoFixEnabled = $state(true);
   let autoSummarizeEnabled = $state(false);
+  let buddyEnabled = $state(true);
+  let buddyTyping = $state(false);
+  let buddyTip = $state<BuddyTip | null>(null);
+  let buddyDismissedId = $state<string | null>(null);
+  let buddyHasRelated = $state(false);
+  let buddyTypingTimer: ReturnType<typeof setTimeout> | null = null;
+  let buddyScanTimer: ReturnType<typeof setTimeout> | null = null;
+  let buddyRelatedTimer: ReturnType<typeof setTimeout> | null = null;
+  let customPromptFocused = $state(false);
+  let pendingPromptDictation = $state<{ text: string; id: number } | null>(null);
   let proactiveLoading = $state(false);
   let editorCursor = $state<number | null>(null);
   let editorSelection = $state<TextSelection | null>(null);
@@ -495,10 +526,36 @@
         return;
       }
 
+      if (parsed.kind === "skill") {
+        if (!selectedPath) {
+          const msg = "Ouvrez une note pour les commandes de conception (PTT).";
+          statusMessage = msg;
+          notify({ kind: "warning", title: "Scribe", message: msg, key: "voice-cmd" });
+          return;
+        }
+        statusMessage = `Commande vocale : ${getSkill(parsed.skillId).label}…`;
+        notify({
+          kind: "info",
+          title: "Scribe",
+          message: `Skill « ${getSkill(parsed.skillId).label} » — traitement…`,
+          key: "voice-cmd",
+        });
+        await handleSkill(parsed.skillId);
+        return;
+      }
+
       if (!selectedPath) {
         const msg = "Ouvrez une note pour insérer la dictée (PTT).";
         statusMessage = msg;
         notify({ kind: "warning", title: "Note requise", message: msg });
+        return;
+      }
+
+      if (customPromptFocused && companionOpen) {
+        pendingPromptDictation = { text: parsed.text, id: Date.now() };
+        const preview = `« ${parsed.text.slice(0, 60)}${parsed.text.length > 60 ? "…" : ""} »`;
+        statusMessage = `Dictée → prompt custom : ${preview}`;
+        notify({ kind: "success", title: "Dictée (prompt)", message: preview, key: "voice-prompt" });
         return;
       }
 
@@ -621,6 +678,11 @@
     }
     scheduleNoteScan(4000);
     scheduleAutoSummary(45000);
+    buddyTyping = false;
+    buddyDismissedId = null;
+    buddyHasRelated = false;
+    refreshBuddyTip();
+    scheduleRelatedCheck();
     if (autoTypoFixEnabled) {
       queueMicrotask(() => void runBatchAutoTypoFix());
     }
@@ -668,6 +730,108 @@
       scheduleNoteScan(8000);
     }
     scheduleAutoSummary(40000);
+    bumpBuddyTyping();
+  }
+
+  function bumpBuddyTyping() {
+    if (!buddyEnabled) return;
+    buddyTyping = true;
+    if (buddyTypingTimer) clearTimeout(buddyTypingTimer);
+    buddyTypingTimer = setTimeout(() => {
+      buddyTyping = false;
+      refreshBuddyTip();
+    }, 1100);
+    // Pendant la frappe : mood listen immédiat, tip allégée
+    refreshBuddyTip();
+  }
+
+  function refreshBuddyTip() {
+    if (!buddyEnabled || !selectedPath) {
+      buddyTip = null;
+      return;
+    }
+    if (buddyScanTimer) clearTimeout(buddyScanTimer);
+    const run = () => {
+      const tip = scanBuddyTip({
+        markdown: noteBody(content),
+        typing: buddyTyping,
+        busy: aiLoading || proactiveLoading,
+        hasSuggestions: aiSuggestions.some((s) => !s.notePath || s.notePath === selectedPath),
+        noteOpen: !!selectedPath,
+        hasRelated: buddyHasRelated,
+      });
+      if (tip && tip.id === buddyDismissedId && tip.id !== "typing" && tip.id !== "busy") {
+        buddyTip = { ...tip, message: tip.mood === "listen" ? tip.message : "" };
+        return;
+      }
+      if (tip && tip.id !== buddyDismissedId) {
+        buddyDismissedId = null;
+      }
+      buddyTip = tip;
+    };
+    // Tips structure après une courte pause ; listen/busy immédiats
+    if (buddyTyping || aiLoading || proactiveLoading) run();
+    else {
+      buddyScanTimer = setTimeout(run, 450);
+      scheduleRelatedCheck();
+    }
+  }
+
+  function scheduleRelatedCheck() {
+    if (!buddyEnabled || !selectedPath) return;
+    const body = noteBody(content).trim();
+    if (body.length < 120) {
+      buddyHasRelated = false;
+      return;
+    }
+    if (buddyRelatedTimer) clearTimeout(buddyRelatedTimer);
+    const path = selectedPath;
+    buddyRelatedTimer = setTimeout(async () => {
+      try {
+        const rag = await fetchRagContext(body.slice(0, 800), path);
+        if (selectedPath !== path) return;
+        const next = rag.length > 80;
+        if (next !== buddyHasRelated) {
+          buddyHasRelated = next;
+          refreshBuddyTip();
+        }
+      } catch {
+        buddyHasRelated = false;
+      }
+    }, 2800);
+  }
+
+  let buddyMood = $derived.by((): BuddyMood => {
+    if (!buddyEnabled) return "idle";
+    if (buddyTip && !buddyTyping && !(aiLoading || proactiveLoading)) return buddyTip.mood;
+    return moodFromActivity(buddyTyping, aiLoading || proactiveLoading);
+  });
+
+  function handleBuddyToggle(enabled: boolean) {
+    buddyEnabled = enabled;
+    saveBuddyEnabled(enabled);
+    if (!enabled) {
+      buddyTip = null;
+      buddyTyping = false;
+    } else {
+      refreshBuddyTip();
+    }
+  }
+
+  function handleBuddyAction(action: BuddyAction) {
+    if (action.kind === "dismiss") {
+      if (buddyTip) buddyDismissedId = buddyTip.id;
+      buddyTip = null;
+      return;
+    }
+    if (action.kind === "open_companion") {
+      companionOpen = true;
+      return;
+    }
+    if (action.kind === "skill") {
+      companionOpen = true;
+      void handleSkill(action.skillId);
+    }
   }
 
   function scheduleAutoSummary(delayMs = 40000) {
@@ -869,7 +1033,7 @@
     try {
       let result = "";
       const ctx = noteContext.trim() || null;
-      const wantsRag = action === "summarize" || action === "reformulate" || action === "custom";
+      const wantsRag = action === "summarize";
       const ragContext = wantsRag
         ? await fetchRagContext(targetText.slice(0, 800), pathAtStart)
         : "";
@@ -901,7 +1065,7 @@
           model: activeModel,
           noteContext: action === "correct" ? null : ctx,
           targetLanguage: null,
-          ragContext: action === "reformulate" ? ragContext || null : null,
+          ragContext: null,
         });
       }
 
@@ -930,7 +1094,9 @@
         statusMessage =
           action === "correct"
             ? "Aucune correction trouvée pour ce passage."
-            : "Réponse IA vide — réessayez.";
+            : action === "reformulate"
+              ? "L'IA a dérivé du contenu — proposition rejetée. Réessayez."
+              : "Réponse IA vide — réessayez.";
         return;
       }
 
@@ -1052,13 +1218,235 @@
     ].slice(0, 12);
   }
 
+  async function handleSkill(id: SkillId) {
+    if (!selectedPath) return;
+    const skill = getSkill(id);
+    const pathAtStart = selectedPath;
+    const epoch = aiEpoch;
+    const targetText = editorSelection?.text ?? noteBody(content);
+    if (!targetText.trim() && !skill.allowEmpty) {
+      statusMessage = "La note est vide — rien à concevoir.";
+      return;
+    }
+
+    companionOpen = true;
+    const titles = flattenNotes(entries).map((e) => noteStem(e.path));
+
+    // Related : RAG local → annexe
+    if (id === "related") {
+      aiLoading = true;
+      statusMessage = "Notes liées — recherche…";
+      try {
+        const rag = await fetchRagContext(targetText.slice(0, 800) || titles.join(" "), pathAtStart);
+        if (epoch !== aiEpoch || selectedPath !== pathAtStart) return;
+        const local = runSkillLocal("related", targetText, { ragBlock: formatRelatedAppendix(rag) });
+        if (!local) {
+          statusMessage = skill.emptyMessage;
+          return;
+        }
+        pushSuggestion({
+          action: "custom",
+          skillId: id,
+          label: skill.label,
+          scope: "à ajouter en fin de note",
+          proposedText: local.proposed,
+          originalText: "",
+          source: "manual",
+          notePath: pathAtStart,
+          applyMode: "append",
+          reason: local.reason,
+        });
+        statusMessage = `${skill.label} prêt — appliquez ou ignorez.`;
+      } catch (e) {
+        statusMessage = `Notes liées indisponibles : ${e}`;
+      } finally {
+        aiLoading = false;
+      }
+      return;
+    }
+
+    // Structurer : Ollama prioritaire. Locaux (sommaire, template, wikiliens) d'abord.
+    const preferLocal =
+      !skill.needsLlm || (skill.id === "structure" && !ollamaStatus.available);
+    const local = preferLocal
+      ? runSkillLocal(id, targetText, {
+          titles,
+          currentTitle: noteStem(pathAtStart),
+          noteContext: noteContext.trim(),
+        })
+      : skill.id === "structure"
+        ? null
+        : runSkillLocal(id, targetText, {
+            titles,
+            currentTitle: noteStem(pathAtStart),
+            noteContext: noteContext.trim(),
+          });
+    if (local) {
+      const mode = local.applyMode ?? skill.applyMode;
+      pushSuggestion({
+        action: "custom",
+        skillId: id,
+        label: skill.label,
+        scope: mode === "append" ? "à ajouter en fin de note" : editorSelection?.text ? "sélection" : "note",
+        proposedText: local.proposed,
+        originalText: mode === "append" || mode === "tags" ? "" : targetText,
+        source: "manual",
+        notePath: pathAtStart,
+        applyMode: mode === "tags" ? "tags" : mode,
+        reason: local.reason,
+        selection:
+          mode === "replace" && editorSelection
+            ? {
+                start: editorSelection.start,
+                end: editorSelection.end,
+                text: editorSelection.text,
+              }
+            : undefined,
+      });
+      statusMessage = `${skill.label} prêt — appliquez ou ignorez.`;
+      return;
+    }
+
+    if (!skill.needsLlm || !skill.llmInstruction) {
+      statusMessage = skill.emptyMessage;
+      return;
+    }
+
+    if (!ollamaStatus.available) {
+      const started = await ensureOllamaRunning(true);
+      if (!started) {
+        settingsOpen = true;
+        statusMessage = "Configurez ou démarrez Ollama dans les réglages.";
+        return;
+      }
+    }
+
+    aiLoading = true;
+    statusMessage = `${skill.label} — en cours…`;
+    try {
+      let promptContent = targetText;
+      if (skill.needsUrlFetch) {
+        const urls = extractUrls(targetText);
+        if (!urls.length) {
+          statusMessage = skill.emptyMessage;
+          return;
+        }
+        const meta = await invoke<{
+          url: string;
+          title: string;
+          description: string;
+          siteName?: string | null;
+          excerpt?: string | null;
+        }>("fetch_page_meta", { url: urls[0] });
+        if (epoch !== aiEpoch || selectedPath !== pathAtStart) return;
+        promptContent = formatEnrichContext(meta);
+      }
+
+      const ragContext =
+        skill.wantsRag
+          ? (await fetchRagContext(targetText.slice(0, 800), pathAtStart)) || null
+          : null;
+
+      const result = await invoke<string>("ollama_custom_prompt", {
+        instruction: skill.llmInstruction,
+        content: promptContent,
+        model: activeModel,
+        noteContext: noteContext.trim() || null,
+        ragContext,
+      });
+      if (epoch !== aiEpoch || selectedPath !== pathAtStart) return;
+
+      let cleaned = sanitizeAiOutput(result, "custom");
+      if (skill.applyMode === "tags") {
+        const tags = parseTagsProposal(cleaned);
+        if (!tags.length) {
+          statusMessage = skill.emptyMessage;
+          return;
+        }
+        pushSuggestion({
+          action: "custom",
+          skillId: id,
+          label: skill.label,
+          scope: "frontmatter",
+          proposedText: `tags: ${tags.join(", ")}`,
+          originalText: "",
+          source: "manual",
+          notePath: pathAtStart,
+          applyMode: "tags",
+          reason: `Tags proposés : ${tags.join(", ")}`,
+        });
+        statusMessage = `${skill.label} prêt — appliquez ou ignorez.`;
+        return;
+      }
+
+      if (skill.applyMode === "replace") {
+        if (skill.id !== "enrich") {
+          cleaned = repairMarkdownProposal(cleaned);
+        }
+        if (
+          !cleaned.trim() ||
+          (skill.id !== "enrich" && !isGroundedTransform(targetText, cleaned))
+        ) {
+          statusMessage =
+            "L'IA a dérivé du contenu — proposition rejetée. Réessayez ou utilisez une skill locale.";
+          return;
+        }
+      } else {
+        if (isEmptyLlmAppendix(cleaned) || !isGroundedAppendix(targetText, cleaned)) {
+          statusMessage = skill.emptyMessage;
+          return;
+        }
+        if (skill.id === "brief") {
+          cleaned = cleaned.trim();
+        }
+      }
+
+      pushSuggestion({
+        action: "custom",
+        skillId: id,
+        label: skill.label,
+        scope: skill.applyMode === "append" ? "à ajouter en fin de note" : "note",
+        proposedText: cleaned,
+        originalText: skill.applyMode === "append" ? "" : targetText,
+        source: "manual",
+        notePath: pathAtStart,
+        applyMode: skill.applyMode === "tags" ? "tags" : skill.applyMode,
+        reason: skill.hint,
+      });
+      statusMessage = `${skill.label} prêt — appliquez ou ignorez.`;
+    } catch (e) {
+      if (epoch === aiEpoch && selectedPath === pathAtStart) {
+        statusMessage = `Erreur IA : ${e}`;
+      }
+    } finally {
+      aiLoading = false;
+    }
+  }
+
+  function formatRelatedAppendix(ragBlock: string): string {
+    if (!ragBlock.trim()) return "";
+    const lines: string[] = [];
+    const re = /\[(\d+)\]\s+(.+?)\s+\(([^)]+)\)\n([\s\S]*?)(?=\n\[\d+\]\s+|$)/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(ragBlock)) !== null) {
+      const title = m[2].trim();
+      const excerpt = m[4].trim().slice(0, 180).replace(/\s+/g, " ");
+      lines.push(`- [[${title}]] — ${excerpt}${excerpt.length >= 180 ? "…" : ""}`);
+    }
+    if (lines.length) return lines.join("\n");
+    return ragBlock
+      .replace(/^Contexte récupéré[\s\S]*?:\n+/i, "")
+      .trim()
+      .slice(0, 1200);
+  }
+
   async function handleCustomPrompt(instruction: string) {
     if (!instruction.trim() || !selectedPath) return;
 
     const epoch = aiEpoch;
     const pathAtStart = selectedPath;
     const sel = editorSelection;
-    const targetText = sel?.text ?? content;
+    const targetText = sel?.text ?? noteBody(content);
     if (!targetText.trim()) {
       statusMessage = "Rien à traiter — sélectionnez du texte ou écrivez dans la note.";
       return;
@@ -1079,19 +1467,24 @@
     statusMessage = `Prompt custom (${scope}) — en cours…`;
 
     try {
+      const wantsRag = instructionWantsVaultContext(instruction);
       const result = await invoke<string>("ollama_custom_prompt", {
         instruction: instruction.trim(),
         content: targetText,
         model: activeModel,
         noteContext: noteContext.trim() || null,
-        ragContext: (await fetchRagContext(targetText.slice(0, 800), pathAtStart)) || null,
+        ragContext: wantsRag
+          ? (await fetchRagContext(targetText.slice(0, 800), pathAtStart)) || null
+          : null,
       });
 
       if (epoch !== aiEpoch || selectedPath !== pathAtStart) return;
 
-      const proposal = buildAiProposal("custom", targetText, result);
+      const proposal = buildAiProposal("custom", targetText, result, instruction.trim());
       if (!proposal) {
-        statusMessage = "Réponse IA vide — modifiez le prompt ou réessayez.";
+        statusMessage = result.trim()
+          ? "L'IA a changé de sujet — proposition rejetée. Le contenu source est conservé, réessayez."
+          : "Réponse IA vide — modifiez le prompt ou réessayez.";
         return;
       }
 
@@ -1130,13 +1523,41 @@
       return;
     }
 
-    // Ne jamais laisser le proactif / typo-IA réécrire juste après une applique manuelle
+    // Ne jamais laisser le proactif / typo-IA / résumé auto réécrire juste après une applique
     silenceAiHelpers(
-      suggestion.action === "translate" || suggestion.action === "reformulate" ? 120000 : 60000,
+      suggestion.action === "translate" ||
+        suggestion.action === "reformulate" ||
+        suggestion.action === "custom"
+        ? 120000
+        : 60000,
     );
 
+    if (suggestion.applyMode === "tags" || suggestion.skillId === "tags") {
+      const tags = parseTagsProposal(suggestion.proposedText);
+      if (!tags.length) {
+        statusMessage = "Aucun tag valide à appliquer.";
+        return;
+      }
+      handleContentChange(setFrontmatterTags(content, tags));
+      aiSuggestions = aiSuggestions.filter((s) => s.id !== id);
+      if (buddyEnabled) {
+        buddyTip = {
+          id: "applied",
+          mood: "ok",
+          message: `Tags : ${tags.join(", ")}`,
+          priority: 95,
+        };
+        setTimeout(() => refreshBuddyTip(), 1800);
+      }
+      statusMessage = "Tags appliqués au frontmatter.";
+      return;
+    }
+
     if (suggestion.applyMode === "append" || suggestion.action === "summarize") {
-      const block = formatSummaryAppendix(suggestion.proposedText, suggestion.label || "Résumé");
+      const raw = suggestion.proposedText.trim();
+      const block = /^##\s+/.test(raw)
+        ? `\n\n---\n\n${raw}\n`
+        : formatSummaryAppendix(raw, suggestion.label || "Résumé");
       editorCursor = content.length + block.length;
       handleContentChange(content + block);
     } else if (suggestion.selection) {
@@ -1149,7 +1570,8 @@
     } else if (
       suggestion.action === "translate" ||
       suggestion.action === "reformulate" ||
-      suggestion.action === "correct"
+      suggestion.action === "correct" ||
+      suggestion.action === "custom"
     ) {
       const next = mergeBodyMarkdown(content, suggestion.proposedText.trim() + "\n");
       editorCursor = Math.min(next.length, Math.max(1, suggestion.proposedText.length));
@@ -1160,6 +1582,15 @@
     }
 
     aiSuggestions = aiSuggestions.filter((s) => s.id !== id);
+    if (buddyEnabled) {
+      buddyTip = {
+        id: "applied",
+        mood: "ok",
+        message: "C'est noté.",
+        priority: 95,
+      };
+      setTimeout(() => refreshBuddyTip(), 1800);
+    }
     statusMessage =
       suggestion.action === "summarize"
         ? "Résumé ajouté en fin de note."
@@ -1479,6 +1910,7 @@
     proactiveEnabled = loadProactiveEnabled();
     autoTypoFixEnabled = loadAutoTypoFixEnabled();
     autoSummarizeEnabled = loadAutoSummarizeEnabled();
+    buddyEnabled = loadBuddyEnabled();
     await refreshVault();
     await ensureOllamaRunning(true);
     await refreshVoice();
@@ -1581,6 +2013,18 @@
 
   onDestroy(() => {
     for (const u of unlisteners) u();
+    if (buddyTypingTimer) clearTimeout(buddyTypingTimer);
+    if (buddyScanTimer) clearTimeout(buddyScanTimer);
+    if (buddyRelatedTimer) clearTimeout(buddyRelatedTimer);
+  });
+
+  $effect(() => {
+    // Recalcule le mood quand charge / suggestions changent
+    void aiLoading;
+    void proactiveLoading;
+    void aiSuggestions.length;
+    void selectedPath;
+    if (buddyEnabled) refreshBuddyTip();
   });
 </script>
 
@@ -1666,6 +2110,8 @@
         ollamaAvailable={ollamaStatus.available}
         {aiLoading}
         companionOpen={companionOpen}
+        companionBusy={aiLoading || proactiveLoading}
+        companionBusyLabel={aiLoading ? "Scribe travaille…" : proactiveLoading ? "Analyse…" : ""}
         onChange={handleContentChange}
         onSave={() => selectedPath && persistNote(selectedPath, content)}
         onAiAction={handleAiAction}
@@ -1737,8 +2183,18 @@
 
 <SettingsPanel
   open={settingsOpen}
+  vaultPath={vaultPath}
   onClose={closeSettings}
   onOllamaUpdated={(s) => (ollamaStatus = s)}
+  onVaultChanged={async (path) => {
+    vaultPath = path;
+    selectedPath = null;
+    content = "";
+    savedContent = "";
+    dirty = false;
+    await refreshVault();
+    statusMessage = `Vault : ${path}`;
+  }}
 />
 
 <VoiceOverlay
@@ -1760,15 +2216,37 @@
   {proactiveEnabled}
   {autoTypoFixEnabled}
   {autoSummarizeEnabled}
+  buddyEnabled={buddyEnabled}
   {proactiveStatus}
   customTargetLabel={customPromptTargetLabel}
   onContextChange={handleNoteContextChange}
   onProactiveToggle={handleProactiveToggle}
   onAutoTypoToggle={handleAutoTypoToggle}
   onAutoSummarizeToggle={handleAutoSummarizeToggle}
+  onBuddyToggle={handleBuddyToggle}
   onCustomPrompt={handleCustomPrompt}
+  onSkill={handleSkill}
+  ollamaAvailable={ollamaStatus.available}
   onApply={applySuggestion}
   onDismiss={dismissSuggestion}
   onDismissAll={() => (aiSuggestions = [])}
   onClose={() => (companionOpen = false)}
+  onCustomPromptFocusChange={(focused) => (customPromptFocused = focused)}
+  dictationToPrompt={pendingPromptDictation}
+  onDictationToPromptConsumed={() => (pendingPromptDictation = null)}
 />
+
+{#if selectedPath}
+  <ScribeBuddy
+    visible={buddyEnabled}
+    mood={buddyMood}
+    tip={buddyTip}
+    panelOpen={companionOpen}
+    onAction={handleBuddyAction}
+    onOpenCompanion={() => (companionOpen = true)}
+    onDismissTip={() => {
+      if (buddyTip) buddyDismissedId = buddyTip.id;
+      buddyTip = null;
+    }}
+  />
+{/if}

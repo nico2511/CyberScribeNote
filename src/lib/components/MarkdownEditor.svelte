@@ -46,6 +46,9 @@
     onExport: () => void;
     onToggleCompanion?: () => void;
     companionOpen?: boolean;
+    /** Activité IA (manuel + proactif) pour la barre de travail. */
+    companionBusy?: boolean;
+    companionBusyLabel?: string;
     onSelectionChange?: (selection: TextSelection | null) => void;
     onCaretChange?: (offset: number) => void;
     onEditingIdle?: (span: ParagraphSpan) => void;
@@ -80,6 +83,8 @@
     onExport,
     onToggleCompanion,
     companionOpen = false,
+    companionBusy = false,
+    companionBusyLabel = "",
     onSelectionChange,
     onCaretChange,
     onEditingIdle,
@@ -848,28 +853,39 @@
         {/if}
       </div>
 
-      <div class="relative flex items-stretch overflow-hidden rounded-2xl border border-border" bind:this={aiMenuRef}>
-        {#if onToggleCompanion}
+      <div
+        class="relative flex min-w-0 items-stretch overflow-hidden rounded-2xl border border-border"
+        bind:this={aiMenuRef}
+      >        {#if onToggleCompanion}
           <button
             type="button"
-            class="bg-surface px-3 py-1.5 text-xs transition hover:bg-surface-muted {companionOpen
+            class="relative min-w-[7.5rem] overflow-hidden bg-surface px-3 py-1.5 text-xs transition hover:bg-surface-muted {companionOpen
               ? 'bg-accent-lavender/30'
               : ''}"
             onclick={onToggleCompanion}
-            title="Afficher / masquer le panneau suggestions"
+            title="Afficher / masquer le panneau Compagnon IA"
           >
-            Compagnon IA
+            {#if companionBusy}
+              <span
+                class="pointer-events-none absolute inset-y-0 left-0 bg-accent-lavender/45 companion-work-bar"
+                aria-hidden="true"
+              ></span>
+            {/if}
+            <span class="relative z-[1]">
+              {companionBusy ? companionBusyLabel || "Scribe travaille…" : "Compagnon IA"}
+            </span>
           </button>
         {/if}
         <button
           type="button"
           class="border-l border-border bg-surface px-2 py-1.5 text-xs transition hover:bg-surface-muted disabled:opacity-40"
           disabled={aiLoading}
-          title={ollamaAvailable ? "Actions IA" : "Configurez Ollama dans les réglages"}
+          title={ollamaAvailable ? "Actions IA (résumer, reformuler…)" : "Configurez Ollama dans les réglages"}
           onclick={toggleAiMenu}
           aria-label="Menu actions IA"
+          aria-expanded={aiMenuOpen}
         >
-          {aiLoading ? "…" : "▾"}
+          {aiLoading ? "…" : "IA ▾"}
         </button>
         {#if aiMenuOpen}
           <div

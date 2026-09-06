@@ -21,6 +21,9 @@ pub struct AppConfig {
     pub whisper_profile: String,
     #[serde(default = "default_max_record_seconds")]
     pub max_record_seconds: u32,
+    /// Chemin absolu du vault Markdown (vide = Documents/CyberScribeNote/vault).
+    #[serde(default)]
+    pub vault_path: Option<String>,
 }
 
 fn default_voice_hotkey() -> String {
@@ -57,6 +60,7 @@ impl Default for AppConfig {
             whisper_compute_type: default_whisper_compute_type(),
             whisper_profile: default_whisper_profile(),
             max_record_seconds: default_max_record_seconds(),
+            vault_path: None,
         }
     }
 }

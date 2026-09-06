@@ -17,6 +17,33 @@ describe("parseVoiceTranscript", () => {
     });
   });
 
+  it("recognizes conception skills", () => {
+    expect(parseVoiceTranscript("Scribe, sommaire")).toMatchObject({
+      kind: "skill",
+      skillId: "outline",
+    });
+    expect(parseVoiceTranscript("Scribe structure")).toMatchObject({
+      kind: "skill",
+      skillId: "structure",
+    });
+    expect(parseVoiceTranscript("Scribe, plan")).toMatchObject({
+      kind: "skill",
+      skillId: "plan",
+    });
+    expect(parseVoiceTranscript("Scribe, tags")).toMatchObject({
+      kind: "skill",
+      skillId: "tags",
+    });
+    expect(parseVoiceTranscript("Scribe, brief")).toMatchObject({
+      kind: "skill",
+      skillId: "brief",
+    });
+    expect(parseVoiceTranscript("Scribe, lien")).toMatchObject({
+      kind: "skill",
+      skillId: "enrich",
+    });
+  });
+
   it("parses search and open", () => {
     expect(parseVoiceTranscript("Scribe, cherche recettes")).toMatchObject({
       kind: "search",
