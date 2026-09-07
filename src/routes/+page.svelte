@@ -10,6 +10,8 @@
   import VoiceOverlay from "$lib/components/VoiceOverlay.svelte";
   import AiCompanionPanel from "$lib/components/AiCompanionPanel.svelte";
   import ScribeBuddy from "$lib/components/ScribeBuddy.svelte";
+  import WelcomeSplash from "$lib/components/WelcomeSplash.svelte";
+  import NoteHistoryPanel from "$lib/components/NoteHistoryPanel.svelte";
   import { applyTheme, loadTheme, saveTheme, toggleTheme } from "$lib/stores/theme";
   import type { ParagraphSpan } from "$lib/note/paragraph";
   import {
@@ -51,6 +53,7 @@
     extractUrls,
     type SkillId,
   } from "$lib/ai/skills";
+  import { isLinkOnlyNote } from "$lib/ai/links";
   import { instructionWantsVaultContext, isGroundedAppendix, isGroundedTransform } from "$lib/ai/grounding";
   import {
     scanBuddyTip,
@@ -86,6 +89,16 @@
   let theme = $state<ThemeMode>("light");
   let searchOpen = $state(false);
   let settingsOpen = $state(false);
+  let splashOpen = $state(false);
+  let historyOpen = $state(false);
+  let txtSyncEnabled = $state(true);
+
+  $effect(() => {
+    // Close history when switching notes
+    selectedPath;
+    historyOpen = false;
+  });
+
   let searchQuery = $state("");
   let searchResults = $state<SearchResult[]>([]);
   let searchLoading = $state(false);
@@ -649,6 +662,26 @@
 
   async function refreshVault() {
     vaultPath = await invoke<string>("init_vault");
+    try {
+      const cfg = await invoke<{ txtSyncEnabled?: boolean }>("get_app_config");
+      txtSyncEnabled = cfg.txtSyncEnabled !== false;
+      if (txtSyncEnabled) {
+        const created = await invoke<string[]>("sync_txt_notes");
+        if (created.length) {
+          notify({
+            kind: "info",
+            title: "Sync TXT → MD",
+            message:
+              created.length === 1
+                ? `Créé : ${created[0]}`
+                : `${created.length} notes créées depuis des .txt`,
+            key: "txt-sync",
+          });
+        }
+      }
+    } catch {
+      /* sync optionnel */
+    }
     entries = await invoke<VaultEntry[]>("list_vault");
   }
 
@@ -759,6 +792,7 @@
         hasSuggestions: aiSuggestions.some((s) => !s.notePath || s.notePath === selectedPath),
         noteOpen: !!selectedPath,
         hasRelated: buddyHasRelated,
+        selectionText: editorSelection?.text,
       });
       if (tip && tip.id === buddyDismissedId && tip.id !== "typing" && tip.id !== "busy") {
         buddyTip = { ...tip, message: tip.mood === "listen" ? tip.message : "" };
@@ -940,7 +974,13 @@
   }
 
   async function handleDelete(path: string) {
-    if (!confirm(`Supprimer « ${path} » ?`)) return;
+    if (
+      !confirm(
+        `Supprimer « ${path} » ?\n\nSi un fichier .txt / .text jumeau existe (sync TXT), il sera aussi supprimé pour éviter sa recréation automatique.`,
+      )
+    ) {
+      return;
+    }
     await invoke("delete_item", { relativePath: path });
     if (selectedPath === path) {
       selectedPath = null;
@@ -965,11 +1005,14 @@
       }
 
       await refreshVault();
-      statusMessage = destinationParent
+      const msg = destinationParent
         ? `Déplacé dans « ${destinationParent} »`
         : "Déplacé à la racine du vault";
+      statusMessage = msg;
+      notify({ kind: "success", title: "Déplacement", message: msg, key: "vault-move" });
     } catch (e) {
       statusMessage = String(e);
+      notify({ kind: "error", title: "Déplacement impossible", message: String(e), key: "vault-move" });
     }
   }
 
@@ -1379,14 +1422,35 @@
         return;
       }
 
+      // Enrich : toujours en append (ne jamais écraser la note).
+      // Remplacement uniquement si la note entière n'est qu'un lien.
+      if (skill.id === "enrich") {
+        const fullBody = noteBody(content);
+        const linkOnly = isLinkOnlyNote(fullBody) && !editorSelection;
+        const mode = linkOnly ? "replace" : "append";
+        const proposed =
+          mode === "append" && !/^##\s+/.test(cleaned.trim())
+            ? `## Lien enrichi\n\n${cleaned.trim()}`
+            : cleaned.trim();
+        pushSuggestion({
+          action: "custom",
+          skillId: id,
+          label: skill.label,
+          scope: mode === "append" ? "à ajouter en fin de note" : "note (lien seul)",
+          proposedText: proposed,
+          originalText: mode === "append" ? "" : fullBody,
+          source: "manual",
+          notePath: pathAtStart,
+          applyMode: mode,
+          reason: skill.hint,
+        });
+        statusMessage = `${skill.label} prêt — ${mode === "append" ? "sera ajouté en fin" : "remplacera le lien seul"}.`;
+        return;
+      }
+
       if (skill.applyMode === "replace") {
-        if (skill.id !== "enrich") {
-          cleaned = repairMarkdownProposal(cleaned);
-        }
-        if (
-          !cleaned.trim() ||
-          (skill.id !== "enrich" && !isGroundedTransform(targetText, cleaned))
-        ) {
+        cleaned = repairMarkdownProposal(cleaned);
+        if (!cleaned.trim() || !isGroundedTransform(targetText, cleaned)) {
           statusMessage =
             "L'IA a dérivé du contenu — proposition rejetée. Réessayez ou utilisez une skill locale.";
           return;
@@ -1846,6 +1910,33 @@
     statusMessage = "Note exportée.";
   }
 
+  async function handleImportText() {
+    const picked = await open({
+      multiple: true,
+      filters: [{ name: "Texte / Markdown", extensions: ["txt", "text", "md"] }],
+      title: "Importer des notes (.txt → .md)",
+    });
+    if (!picked) return;
+    const paths = Array.isArray(picked) ? picked : [picked];
+    try {
+      const created = await invoke<string[]>("import_text_files", {
+        paths,
+        parentPath: "",
+      });
+      await refreshVault();
+      const msg =
+        created.length === 1
+          ? `Importé : ${created[0]}`
+          : `${created.length} notes importées (.md)`;
+      statusMessage = msg;
+      notify({ kind: "success", title: "Import", message: msg, key: "import-txt" });
+      if (created[0]) await loadNote(created[0]);
+    } catch (e) {
+      statusMessage = String(e);
+      notify({ kind: "error", title: "Import", message: String(e), key: "import-txt" });
+    }
+  }
+
   function handleThemeToggle() {
     theme = toggleTheme(theme);
     saveTheme(theme);
@@ -2007,8 +2098,12 @@
       }),
     );
 
-    const welcome = entries.find((e) => !e.isDir && e.path === "Bienvenue.md");
-    if (welcome) await loadNote(welcome.path);
+    // Splash premier lancement (pas de note Bienvenue forcée)
+    try {
+      splashOpen = localStorage.getItem("csn-splash-dismissed") !== "1";
+    } catch {
+      splashOpen = true;
+    }
   });
 
   onDestroy(() => {
@@ -2030,8 +2125,8 @@
 
 <svelte:window onkeydown={onGlobalKeydown} />
 
-<div class="flex h-screen flex-col overflow-hidden">
-  <header class="flex items-center justify-between border-b border-border bg-surface px-4 py-2">
+<div class="flex h-screen flex-col overflow-hidden bg-bg">
+  <header class="flex shrink-0 items-center justify-between px-4 py-2">
     <div class="flex items-center gap-3 text-xs text-text-muted">
       <button
         type="button"
@@ -2086,7 +2181,8 @@
     </div>
   </header>
 
-  <div class="flex min-h-0 flex-1">
+  <!-- Léger inset : les arrondis ne collent plus aux bords de la fenêtre -->
+  <div class="flex min-h-0 flex-1 gap-2.5 px-2.5 pb-2.5">
     <Sidebar
       {entries}
       {vaultPath}
@@ -2097,6 +2193,7 @@
       onCreateFolder={handleCreateFolder}
       onDelete={handleDelete}
       onMove={handleMove}
+      onImportText={handleImportText}
     />
 
     {#if selectedPath}
@@ -2119,10 +2216,15 @@
         onImportImages={importImagesFromPaths}
         onPasteImageBytes={importPastedImage}
         onExport={handleExport}
+        onOpenHistory={() => (historyOpen = true)}
         onToggleCompanion={toggleCompanion}
         onSelectionChange={(sel) => {
           editorSelection = sel;
           if (sel) lastCaretOffset = sel.end;
+          if (buddyEnabled) {
+            if (buddyScanTimer) clearTimeout(buddyScanTimer);
+            buddyScanTimer = setTimeout(() => refreshBuddyTip(), sel?.text.trim() ? 350 : 200);
+          }
         }}
         onCaretChange={(offset) => {
           lastCaretOffset = offset;
@@ -2140,7 +2242,9 @@
         onDictationConsumed={() => (pendingDictation = null)}
       />
     {:else}
-      <section class="flex flex-1 flex-col items-center justify-center gap-4 bg-bg text-center">
+      <section
+        class="flex flex-1 flex-col items-center justify-center gap-4 rounded-3xl border border-border bg-surface text-center shadow-sm"
+      >
         <PixelIcon name="note" size={24} class="text-accent-lavender" />
         <div>
           <h2 class="text-xl font-semibold">Sélectionnez ou créez une note</h2>
@@ -2151,7 +2255,7 @@
         <div class="flex gap-2">
           <button
             type="button"
-            class="rounded-2xl bg-accent-lavender/50 px-4 py-2 text-sm font-medium transition hover:bg-accent-lavender/70"
+            class="btn-accent px-4 py-2 text-sm"
             onclick={() => handleCreateNote("")}
           >
             + Nouvelle note
@@ -2159,7 +2263,7 @@
           {#if !ollamaStatus.available}
             <button
               type="button"
-              class="rounded-2xl border border-border px-4 py-2 text-sm transition hover:bg-surface-muted"
+              class="btn-ghost border border-border px-4 py-2 text-sm"
               onclick={openSettings}
             >
               Configurer Ollama
@@ -2192,6 +2296,7 @@
     content = "";
     savedContent = "";
     dirty = false;
+    historyOpen = false;
     await refreshVault();
     statusMessage = `Vault : ${path}`;
   }}
@@ -2247,6 +2352,41 @@
     onDismissTip={() => {
       if (buddyTip) buddyDismissedId = buddyTip.id;
       buddyTip = null;
+    }}
+  />
+{/if}
+
+<WelcomeSplash
+  open={splashOpen}
+  onDismiss={(dontShowAgain) => {
+    splashOpen = false;
+    if (dontShowAgain) {
+      try {
+        localStorage.setItem("csn-splash-dismissed", "1");
+      } catch {
+        /* ignore */
+      }
+    }
+  }}
+/>
+
+{#if selectedPath}
+  <NoteHistoryPanel
+    open={historyOpen}
+    notePath={selectedPath}
+    currentContent={content}
+    onClose={() => (historyOpen = false)}
+    onRestored={(next) => {
+      content = next;
+      savedContent = next;
+      dirty = false;
+      statusMessage = "Version restaurée.";
+      notify({
+        kind: "success",
+        title: "Historique",
+        message: "Ancienne version restaurée.",
+        key: "history-restore",
+      });
     }}
   />
 {/if}

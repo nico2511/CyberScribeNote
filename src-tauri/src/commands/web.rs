@@ -231,7 +231,7 @@ pub async fn fetch_page_meta(url: String) -> Result<PageMeta, String> {
         .build()
         .map_err(|e| e.to_string())?;
 
-    let mut excerpt: Option<String> = None;
+    let mut excerpt: Option<String>;
     let mut title: String;
     let mut description: String;
     let mut site_name: Option<String>;

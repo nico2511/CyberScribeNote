@@ -44,6 +44,7 @@
     onImportImages: (paths: string[]) => void | Promise<void>;
     onPasteImageBytes: (base64: string, extension: string) => void | Promise<void>;
     onExport: () => void;
+    onOpenHistory?: () => void;
     onToggleCompanion?: () => void;
     companionOpen?: boolean;
     /** Activité IA (manuel + proactif) pour la barre de travail. */
@@ -81,6 +82,7 @@
     onImportImages,
     onPasteImageBytes,
     onExport,
+    onOpenHistory,
     onToggleCompanion,
     companionOpen = false,
     companionBusy = false,
@@ -388,16 +390,19 @@
   }
 
   function toggleAiMenu(e: MouseEvent) {
+    e.preventDefault();
     e.stopPropagation();
+    imageMenuOpen = false;
     if (!aiMenuOpen) {
       // Figer la sélection AVANT les clics du menu (sinon TipTap la perd)
       readSelectionFromEditor();
       selectionPinned = !!selection;
+      aiMenuOpen = true;
     } else {
       selectionPinned = false;
+      aiMenuOpen = false;
+      translateMenuOpen = false;
     }
-    aiMenuOpen = !aiMenuOpen;
-    if (!aiMenuOpen) translateMenuOpen = false;
   }
 
   function runAi(e: MouseEvent, action: AiAction, translateTo?: TranslateLang) {
@@ -412,11 +417,14 @@
   }
 
   function handleWindowClick(e: MouseEvent) {
-    if (aiMenuRef && !aiMenuRef.contains(e.target as Node)) {
+    const target = e.target as HTMLElement;
+    if (aiMenuOpen && aiMenuRef && !aiMenuRef.contains(target)) {
       aiMenuOpen = false;
       translateMenuOpen = false;
     }
-    const target = e.target as HTMLElement;
+    if (imageMenuOpen && !target.closest?.("[data-image-menu]")) {
+      imageMenuOpen = false;
+    }
     if (target.closest?.(".wikilink")) {
       const title = target.closest(".wikilink")?.getAttribute("data-wikilink");
       if (title) {
@@ -447,6 +455,77 @@
       selection: selection ?? request.selection,
     });
     selection = null;
+  }
+
+  function handleContextFormat(
+    action:
+      | "bold"
+      | "italic"
+      | "underline"
+      | "strike"
+      | "h1"
+      | "h2"
+      | "h3"
+      | "bullet"
+      | "ordered"
+      | "task"
+      | "code"
+      | "codeBlock"
+      | "quote"
+      | "link",
+  ) {
+    if (!editor) return;
+    const chain = editor.chain().focus();
+    switch (action) {
+      case "bold":
+        chain.toggleBold().run();
+        break;
+      case "italic":
+        chain.toggleItalic().run();
+        break;
+      case "underline":
+        chain.toggleUnderline().run();
+        break;
+      case "strike":
+        chain.toggleStrike().run();
+        break;
+      case "h1":
+        chain.toggleHeading({ level: 1 }).run();
+        break;
+      case "h2":
+        chain.toggleHeading({ level: 2 }).run();
+        break;
+      case "h3":
+        chain.toggleHeading({ level: 3 }).run();
+        break;
+      case "bullet":
+        chain.toggleBulletList().run();
+        break;
+      case "ordered":
+        chain.toggleOrderedList().run();
+        break;
+      case "task":
+        chain.toggleTaskList().run();
+        break;
+      case "code":
+        chain.toggleCode().run();
+        break;
+      case "codeBlock":
+        chain.toggleCodeBlock().run();
+        break;
+      case "quote":
+        chain.toggleBlockquote().run();
+        break;
+      case "link": {
+        const prev = editor.getAttributes("link").href as string | undefined;
+        const url = window.prompt("URL du lien", prev ?? "https://");
+        if (url === null) break;
+        if (!url.trim()) chain.extendMarkRange("link").unsetLink().run();
+        else chain.extendMarkRange("link").setLink({ href: url.trim() }).run();
+        break;
+      }
+    }
+    closeEditorContextMenu();
   }
 
   function pathsFromDataTransfer(dataTransfer: DataTransfer | null): string[] {
@@ -786,7 +865,7 @@
   });
 </script>
 
-<section class="flex h-full min-w-0 flex-1 flex-col bg-bg">
+<section class="flex h-full min-w-0 flex-1 flex-col overflow-hidden rounded-3xl border border-border bg-surface shadow-sm">
   <header class="flex items-center justify-between border-b border-border px-4 py-3">
     <div class="min-w-0">
       <h2 class="truncate text-lg font-semibold">{title || "Sans titre"}</h2>
@@ -826,11 +905,15 @@
         Image
       </button>
 
-      <div class="relative">
+      <div class="relative" data-image-menu>
         <button
           type="button"
           class="rounded-2xl border border-border bg-surface px-3 py-1.5 text-xs transition hover:bg-surface-muted"
-          onclick={() => (imageMenuOpen = !imageMenuOpen)}
+          onclick={(e) => {
+            e.stopPropagation();
+            aiMenuOpen = false;
+            imageMenuOpen = !imageMenuOpen;
+          }}
           title="Redimensionner l'image sélectionnée"
         >
           Taille
@@ -853,16 +936,22 @@
         {/if}
       </div>
 
+      <!-- Pas d'overflow-hidden ici : sinon le menu IA est clipé et « ne fait rien ». -->
       <div
-        class="relative flex min-w-0 items-stretch overflow-hidden rounded-2xl border border-border"
+        class="relative z-40 flex min-w-0 items-stretch rounded-2xl border border-border"
         bind:this={aiMenuRef}
-      >        {#if onToggleCompanion}
+      >
+        {#if onToggleCompanion}
           <button
             type="button"
-            class="relative min-w-[7.5rem] overflow-hidden bg-surface px-3 py-1.5 text-xs transition hover:bg-surface-muted {companionOpen
+            class="relative min-w-[7.5rem] overflow-hidden rounded-l-2xl bg-surface px-3 py-1.5 text-xs transition hover:bg-surface-muted {companionOpen
               ? 'bg-accent-lavender/30'
               : ''}"
-            onclick={onToggleCompanion}
+            onclick={(e) => {
+              e.stopPropagation();
+              aiMenuOpen = false;
+              onToggleCompanion();
+            }}
             title="Afficher / masquer le panneau Compagnon IA"
           >
             {#if companionBusy}
@@ -878,22 +967,28 @@
         {/if}
         <button
           type="button"
-          class="border-l border-border bg-surface px-2 py-1.5 text-xs transition hover:bg-surface-muted disabled:opacity-40"
+          class="border-l border-border bg-surface px-2.5 py-1.5 text-xs font-medium transition hover:bg-accent-lavender/25 disabled:opacity-40 {aiMenuOpen
+            ? 'bg-accent-lavender/30'
+            : ''} {onToggleCompanion ? 'rounded-r-2xl' : 'rounded-2xl'}"
           disabled={aiLoading}
           title={ollamaAvailable ? "Actions IA (résumer, reformuler…)" : "Configurez Ollama dans les réglages"}
           onclick={toggleAiMenu}
           aria-label="Menu actions IA"
           aria-expanded={aiMenuOpen}
+          aria-haspopup="menu"
         >
           {aiLoading ? "…" : "IA ▾"}
         </button>
         {#if aiMenuOpen}
           <div
-            class="absolute right-0 top-full z-50 mt-1 min-w-[12rem] overflow-hidden rounded-xl border border-border bg-surface py-1 shadow-lg"
+            role="menu"
+            class="absolute right-0 top-full z-[80] mt-1 min-w-[13rem] overflow-hidden rounded-xl border border-border bg-surface py-1 shadow-lg"
             style:box-shadow="var(--shadow)"
           >
             {#if !ollamaAvailable}
-              <p class="px-3 py-2 text-xs text-text-muted">Ollama hors ligne — ouvrez les Réglages</p>
+              <p class="border-b border-border px-3 py-2 text-xs text-text-muted">
+                Ollama hors ligne — ouvrez les Réglages pour démarrer.
+              </p>
             {/if}
             {#if selection}
               <p class="border-b border-border px-3 py-1.5 text-[10px] text-accent-lavender">
@@ -907,6 +1002,7 @@
             {#each aiActions as action (action.id)}
               <button
                 type="button"
+                role="menuitem"
                 class="block w-full px-3 py-2 text-left transition hover:bg-surface-muted disabled:opacity-40"
                 disabled={!ollamaAvailable || aiLoading}
                 onclick={(e) => runAi(e, action.id)}
@@ -917,6 +1013,7 @@
             {/each}
             <button
               type="button"
+              role="menuitem"
               class="block w-full px-3 py-2 text-left transition hover:bg-surface-muted disabled:opacity-40"
               disabled={!ollamaAvailable || aiLoading}
               onclick={(e) => {
@@ -932,6 +1029,7 @@
                 {#each TRANSLATE_LANGUAGES as lang (lang.id)}
                   <button
                     type="button"
+                    role="menuitem"
                     class="block w-full px-4 py-1.5 text-left text-xs transition hover:bg-accent-blue/20 disabled:opacity-40"
                     disabled={!ollamaAvailable || aiLoading}
                     onclick={(e) => runAi(e, "translate", lang.id)}
@@ -954,9 +1052,20 @@
         Exporter
       </button>
 
+      {#if onOpenHistory}
+        <button
+          type="button"
+          class="rounded-2xl border border-border bg-surface px-3 py-1.5 text-xs transition hover:bg-surface-muted"
+          title="Versions précédentes de cette note"
+          onclick={onOpenHistory}
+        >
+          Historique
+        </button>
+      {/if}
+
       <button
         type="button"
-        class="rounded-2xl bg-accent-lavender/50 px-3 py-1.5 text-xs font-medium transition hover:bg-accent-lavender/70 disabled:opacity-40"
+        class="btn-accent px-3 py-1.5 text-xs disabled:opacity-40"
         disabled={!dirty || saving}
         onclick={onSave}
       >
@@ -1002,6 +1111,7 @@
     {ollamaAvailable}
     {aiLoading}
     onAction={handleEditorMenuAction}
+    onFormat={handleContextFormat}
     onClose={closeEditorContextMenu}
   />
 </section>

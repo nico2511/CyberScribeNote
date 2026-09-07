@@ -71,15 +71,16 @@ describe("scanBuddyTip", () => {
     expect(tip?.action).toEqual({ kind: "skill", skillId: "template" });
   });
 
-  it("surfaces related when RAG has hits", () => {
+  it("suggests enrich when a URL is selected", () => {
     const tip = scanBuddyTip({
-      markdown: "A".repeat(150),
+      markdown: "# Doc\n\nBeaucoup de texte déjà présent dans la note qui n'est pas un simple lien.\n",
       typing: false,
       busy: false,
       hasSuggestions: false,
       noteOpen: true,
-      hasRelated: true,
+      selectionText: "https://github.com/nico2511/CyberScribeNote",
     });
-    expect(tip?.id).toBe("related");
+    expect(tip?.id).toBe("sel-link");
+    expect(tip?.action).toEqual({ kind: "skill", skillId: "enrich" });
   });
 });

@@ -45,6 +45,12 @@ export interface AppConfig {
   maxRecordSeconds: number;
   /** Chemin absolu du vault ; null/undefined = défaut Documents/CyberScribeNote/vault */
   vaultPath?: string | null;
+  /** Convertir auto les .txt du vault en .md (copie). */
+  txtSyncEnabled?: boolean;
+  /** Snapshots à chaque sauvegarde. */
+  noteHistoryEnabled?: boolean;
+  /** Max versions par note. */
+  noteHistoryMax?: number;
 }
 
 export interface RecommendedModel {
@@ -107,6 +113,8 @@ export interface VoiceStatus {
 }
 
 export interface VoiceDepsStatus {
+  /** `"sidecar"` = voice_worker.exe ; `"python"` = script + Python */
+  mode?: "sidecar" | "python" | string;
   pythonFound: boolean;
   pythonPath: string;
   depsOk: boolean;

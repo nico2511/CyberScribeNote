@@ -73,18 +73,18 @@ export const NOTE_SKILLS: NoteSkill[] = [
   {
     id: "enrich",
     label: "Lien",
-    hint: "Enrichit une URL (titre, extrait) en brouillon de note",
+    hint: "Enrichit une URL — ajoute une section en fin de note (n'écrase pas)",
     needsLlm: true,
-    applyMode: "replace",
+    applyMode: "append",
     needsUrlFetch: true,
     group: "write",
     voice: /^(enrich\w*|lien|url|page web)\b/,
     promptMatch: /\b(enrichir|analyser le lien|depuis l['']url)\b/i,
     llmInstruction:
-      "À partir des MÉTADONNÉES et de l'extrait de contenu fournis (titre, description, URL, README/article si présent), rédige un brouillon de note Markdown.\n" +
-      "Structure :\n# {titre}\n\nSource : {url}\n\n## Résumé\n(2–4 phrases d'après la description / extrait)\n\n## À retenir\n- …\n\n## Suite\n- [ ] …\n\n" +
-      "N'invente PAS de faits absents des métadonnées ou de l'extrait. Si l'extrait est long, synthétise sans inventer.\n" +
-      "Réponds uniquement avec le Markdown.",
+      "À partir des MÉTADONNÉES et de l'extrait fournis (titre, description, URL, README/article si présent), rédige une SECTION Markdown à AJOUTER en fin de note.\n" +
+      "Structure :\n## Lien · {titre}\n\nSource : {url}\n\n### Résumé\n(2–4 phrases d'après la description / extrait)\n\n### À retenir\n- …\n\n### Suite\n- [ ] …\n\n" +
+      "N'invente PAS de faits absents des métadonnées ou de l'extrait. Pas de frontmatter, pas de document complet.\n" +
+      "Réponds uniquement avec le Markdown de la section.",
     emptyMessage: "Aucun lien http(s) trouvé dans la note.",
   },
   {

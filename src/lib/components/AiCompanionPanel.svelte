@@ -211,7 +211,7 @@
 {#if open}
   <div
     bind:this={panelRef}
-    class="fixed z-50 flex flex-col overflow-hidden rounded-2xl border border-border bg-surface shadow-2xl {dragging
+    class="fixed z-50 flex flex-col overflow-hidden rounded-3xl border border-border bg-surface shadow-2xl {dragging
       ? 'select-none'
       : ''}"
     style:left="{pos.x}px"
@@ -291,7 +291,7 @@
           </p>
           <button
             type="button"
-            class="shrink-0 rounded-xl border border-accent-lavender bg-accent-lavender/25 px-3 py-1.5 text-[10px] font-semibold transition hover:bg-accent-lavender/40 disabled:opacity-40"
+            class="btn-accent shrink-0 px-3 py-1.5 text-[10px] disabled:opacity-40"
             disabled={!customPrompt.trim() || aiLoading || proactiveLoading}
             onclick={submitCustomPrompt}
           >

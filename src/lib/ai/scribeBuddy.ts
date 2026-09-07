@@ -27,6 +27,8 @@ export interface BuddyScanInput {
   noteOpen: boolean;
   /** true si le RAG a déjà des hits pour cette note (précalculé). */
   hasRelated?: boolean;
+  /** Texte sélectionné dans l'éditeur (analyse contextuelle). */
+  selectionText?: string;
 }
 
 function fenceUnclosed(md: string): boolean {
@@ -93,6 +95,34 @@ export function scanBuddyTip(input: BuddyScanInput): BuddyTip | null {
       message: "J'écoute.",
       priority: 90,
     };
+  }
+
+  const sel = (input.selectionText ?? "").trim();
+  if (sel.length >= 8) {
+    const selUrls = extractUrls(sel);
+    if (selUrls.length > 0) {
+      return {
+        id: "sel-link",
+        mood: "idea",
+        message:
+          selUrls.length === 1
+            ? "Lien sélectionné — je peux l'enrichir."
+            : `${selUrls.length} liens sélectionnés — enrichir le premier ?`,
+        actionLabel: "Enrichir",
+        action: { kind: "skill", skillId: "enrich" },
+        priority: 92,
+      };
+    }
+    if (sel.length >= 40 && sel.length <= 2500) {
+      return {
+        id: "sel-text",
+        mood: "idea",
+        message: "Passage sélectionné — reformuler ou corriger ?",
+        actionLabel: "Compagnon",
+        action: { kind: "open_companion" },
+        priority: 75,
+      };
+    }
   }
 
   const body = input.markdown.trim();

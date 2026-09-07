@@ -2,8 +2,9 @@ mod commands;
 
 use commands::{
     create_folder, create_note, delete_item, export_note, get_app_config,
-    import_image, import_image_bytes, init_vault, default_vault_path, set_vault_path,
-    list_vault, move_vault_item, ollama_delete_model,
+    import_image, import_image_bytes, import_text_files, init_vault, default_vault_path, set_vault_path,
+    list_vault, list_note_history, read_note_version, restore_note_version, sync_txt_notes,
+    move_vault_item, ollama_delete_model,
     ollama_detect, ollama_install, ollama_pull_model, ollama_recommended_models,
     ollama_start_service, ollama_status, ollama_proactive_suggest, ollama_custom_prompt,
     ollama_summarize_note, ollama_transform_note, rag_query, rag_reindex, rag_status, read_note,
@@ -67,6 +68,11 @@ pub fn run() {
             export_note,
             import_image,
             import_image_bytes,
+            import_text_files,
+            sync_txt_notes,
+            list_note_history,
+            read_note_version,
+            restore_note_version,
             search_vault,
             get_app_config,
             save_app_config,

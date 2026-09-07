@@ -24,8 +24,23 @@ pub struct AppConfig {
     /// Chemin absolu du vault Markdown (vide = Documents/CyberScribeNote/vault).
     #[serde(default)]
     pub vault_path: Option<String>,
+    /// Convertir automatiquement les .txt du vault en .md (copie, sans supprimer le .txt).
+    #[serde(default = "default_true")]
+    pub txt_sync_enabled: bool,
+    /// Snapshots locaux à chaque sauvegarde.
+    #[serde(default = "default_true")]
+    pub note_history_enabled: bool,
+    /// Nombre max de versions par note.
+    #[serde(default = "default_history_max")]
+    pub note_history_max: u32,
 }
 
+fn default_true() -> bool {
+    true
+}
+fn default_history_max() -> u32 {
+    25
+}
 fn default_voice_hotkey() -> String {
     "F8".into()
 }
@@ -61,6 +76,9 @@ impl Default for AppConfig {
             whisper_profile: default_whisper_profile(),
             max_record_seconds: default_max_record_seconds(),
             vault_path: None,
+            txt_sync_enabled: true,
+            note_history_enabled: true,
+            note_history_max: default_history_max(),
         }
     }
 }

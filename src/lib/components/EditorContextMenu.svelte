@@ -2,6 +2,22 @@
   import type { AiActionRequest } from "$lib/voice/commands";
   import { TRANSLATE_LANGUAGES, type TranslateLang } from "$lib/ai/languages";
 
+  export type FormatAction =
+    | "bold"
+    | "italic"
+    | "underline"
+    | "strike"
+    | "h1"
+    | "h2"
+    | "h3"
+    | "bullet"
+    | "ordered"
+    | "task"
+    | "code"
+    | "codeBlock"
+    | "quote"
+    | "link";
+
   interface Props {
     open: boolean;
     x: number;
@@ -10,14 +26,41 @@
     ollamaAvailable: boolean;
     aiLoading: boolean;
     onAction: (request: AiActionRequest) => void;
+    onFormat: (action: FormatAction) => void;
     onClose: () => void;
   }
 
-  let { open, x, y, hasSelection, ollamaAvailable, aiLoading, onAction, onClose }: Props =
-    $props();
+  let {
+    open,
+    x,
+    y,
+    hasSelection,
+    ollamaAvailable,
+    aiLoading,
+    onAction,
+    onFormat,
+    onClose,
+  }: Props = $props();
 
   let panelRef = $state<HTMLDivElement | null>(null);
   let translateOpen = $state(false);
+
+  const formatItems: { id: FormatAction; label: string }[] = [
+    { id: "bold", label: "Gras" },
+    { id: "italic", label: "Italique" },
+    { id: "underline", label: "Souligné" },
+    { id: "strike", label: "Barré" },
+    { id: "h1", label: "Titre 1" },
+    { id: "h2", label: "Titre 2" },
+    { id: "h3", label: "Titre 3" },
+    { id: "bullet", label: "Liste à puces" },
+    { id: "ordered", label: "Liste numérotée" },
+    { id: "task", label: "Tâche" },
+    { id: "code", label: "Code" },
+    { id: "codeBlock", label: "Bloc code" },
+    { id: "quote", label: "Citation" },
+    { id: "link", label: "Lien" },
+  ];
 
   const actions: { id: AiActionRequest["action"]; label: string; desc: string }[] = [
     { id: "reformulate", label: "Reformuler", desc: "Suggestion plus claire" },
@@ -26,10 +69,10 @@
   ];
 
   const panelStyle = $derived.by(() => {
-    const width = 260;
+    const width = 280;
     const margin = 8;
     const left = Math.min(Math.max(margin, x), window.innerWidth - width - margin);
-    const top = Math.min(Math.max(margin, y), window.innerHeight - 380 - margin);
+    const top = Math.min(Math.max(margin, y), window.innerHeight - 520 - margin);
     return `left:${left}px;top:${top}px;width:${width}px;`;
   });
 
@@ -41,12 +84,17 @@
     onAction({ action, translateTo });
     onClose();
   }
+
+  function format(id: FormatAction) {
+    onFormat(id);
+    onClose();
+  }
 </script>
 
 {#if open}
   <div
     bind:this={panelRef}
-    class="fixed z-50 overflow-hidden rounded-lg border border-border bg-surface py-1 shadow-xl"
+    class="fixed z-50 max-h-[min(80vh,560px)] overflow-y-auto rounded-2xl border border-border bg-surface py-1 shadow-xl"
     style={panelStyle}
     style:box-shadow="var(--shadow)"
     role="menu"
@@ -54,6 +102,22 @@
     aria-label="Actions sur le texte"
   >
     <div class="border-b border-border px-3 py-2">
+      <p class="text-[10px] font-semibold uppercase tracking-wide text-text-muted">Formatage</p>
+    </div>
+    <div class="grid grid-cols-2 gap-0.5 px-1.5 py-1.5">
+      {#each formatItems as item (item.id)}
+        <button
+          type="button"
+          class="rounded-xl px-2.5 py-1.5 text-left text-xs font-medium text-text transition hover:bg-accent-blue/25"
+          role="menuitem"
+          onclick={() => format(item.id)}
+        >
+          {item.label}
+        </button>
+      {/each}
+    </div>
+
+    <div class="border-b border-t border-border px-3 py-2">
       <p class="text-xs font-semibold">✦ Compagnon IA</p>
       <p class="text-[10px] text-text-muted">
         {hasSelection ? "Cible : sélection" : "Cible : note entière"} · suggestion latérale

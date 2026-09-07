@@ -41,6 +41,9 @@
     whisperProfile: "fast",
     maxRecordSeconds: 90,
     vaultPath: null,
+    txtSyncEnabled: true,
+    noteHistoryEnabled: true,
+    noteHistoryMax: 25,
   });
   let defaultVault = $state("");
   let currentVault = $state("");
@@ -393,7 +396,7 @@
     onclick={onClose}
   >
     <div
-      class="flex h-full w-full max-w-md flex-col border-l border-border bg-surface shadow-lg"
+      class="flex h-full w-full max-w-md flex-col rounded-l-3xl border-l border-border bg-surface shadow-lg"
       style:box-shadow="var(--shadow)"
       onclick={(e) => e.stopPropagation()}
       onkeydown={handleKeydown}
@@ -568,6 +571,84 @@
               Défaut
             </button>
           </div>
+          <label class="flex cursor-pointer items-start gap-2 text-[11px] text-text">
+            <input
+              type="checkbox"
+              class="mt-0.5"
+              checked={config.txtSyncEnabled !== false}
+              onchange={(e) => {
+                config.txtSyncEnabled = (e.currentTarget as HTMLInputElement).checked;
+                void saveConfig();
+              }}
+            />
+            <span>
+              <span class="font-medium">Sync TXT → MD</span>
+              <span class="block text-text-muted">
+                À chaque actualisation du vault, crée une copie .md pour chaque .txt sans jumeau
+                (Nextcloud, etc.). Le .txt n'est pas modifié à la création ; le supprimer avec la
+                note .md évite la boucle de recréation.
+              </span>
+            </span>
+          </label>
+          <label class="flex cursor-pointer items-start gap-2 text-[11px] text-text">
+            <input
+              type="checkbox"
+              class="mt-0.5"
+              checked={config.noteHistoryEnabled !== false}
+              onchange={(e) => {
+                config.noteHistoryEnabled = (e.currentTarget as HTMLInputElement).checked;
+                void saveConfig();
+              }}
+            />
+            <span>
+              <span class="font-medium">Historique des notes</span>
+              <span class="block text-text-muted">
+                Snapshot local à chaque sauvegarde (bouton Historique dans l'éditeur).
+              </span>
+            </span>
+          </label>
+          {#if config.noteHistoryEnabled !== false}
+            <label class="flex items-center justify-between gap-2 text-[11px] text-text">
+              <span class="text-text-muted">Versions max / note</span>
+              <input
+                type="number"
+                min="5"
+                max="100"
+                class="w-16 rounded-xl border border-border bg-surface px-2 py-1 text-right"
+                value={config.noteHistoryMax ?? 25}
+                onchange={(e) => {
+                  const n = Number((e.currentTarget as HTMLInputElement).value);
+                  config.noteHistoryMax = Number.isFinite(n)
+                    ? Math.min(100, Math.max(5, Math.round(n)))
+                    : 25;
+                  void saveConfig();
+                }}
+              />
+            </label>
+          {/if}
+          <button
+            type="button"
+            class="btn-secondary w-full py-2 text-xs disabled:opacity-50"
+            disabled={busy}
+            onclick={async () => {
+              busy = true;
+              try {
+                const created = await invoke<string[]>("sync_txt_notes");
+                message =
+                  created.length === 0
+                    ? "Aucun nouveau .txt à convertir."
+                    : `${created.length} note(s) créée(s) depuis .txt`;
+                notify({ kind: "success", title: "Sync TXT", message, key: "txt-sync" });
+                onVaultChanged?.(currentVault);
+              } catch (e) {
+                error = String(e);
+              } finally {
+                busy = false;
+              }
+            }}
+          >
+            Synchroniser les .txt maintenant
+          </button>
         </section>
 
         <!-- RAG -->
@@ -612,27 +693,60 @@
         <!-- Voix -->
         <section class="space-y-3 border-t border-border pt-4">
           <h3 class="text-sm font-semibold">Voix (CyberScribe)</h3>
+          <p class="text-[11px] leading-relaxed text-text-muted">
+            L’app lance <strong>un seul</strong> worker en arrière-plan (pas les deux). Priorité au
+            sidecar <code class="text-[10px]">voice_worker.exe</code> s’il est présent ; sinon
+            Python + <code class="text-[10px]">voice_worker.py</code>. Dans les deux cas, le modèle
+            Whisper (poids ML) est téléchargé dans le cache local au premier usage — d’où le bouton
+            ci-dessous.
+          </p>
 
           {#if loading && !voiceDeps}
             <div class="animate-pulse h-20 rounded-2xl bg-surface-muted"></div>
           {:else}
             <div class="rounded-2xl border border-border bg-surface-muted p-4 text-sm">
               <div class="flex justify-between py-1">
-                <span class="text-text-muted">Worker</span>
-                <span class={voiceDeps?.workerPath ? "text-accent-mint" : "text-danger"} title={voiceDeps?.workerPath}>
-                  {voiceDeps?.workerPath ? "Trouvé" : "Introuvable"}
-                </span>
-              </div>
-              <div class="flex justify-between py-1">
-                <span class="text-text-muted">Python</span>
-                <span>{voiceDeps?.pythonFound ? voiceDeps.pythonPath : "Non trouvé"}</span>
-              </div>
-              <div class="flex justify-between py-1">
-                <span class="text-text-muted">Dépendances</span>
+                <span class="text-text-muted">Mode</span>
                 <span class={voiceDeps?.depsOk ? "text-accent-mint" : "text-danger"}>
-                  {voiceDeps?.depsOk ? "OK" : "Manquantes"}
+                  {voiceDeps?.mode === "sidecar"
+                    ? "Sidecar .exe (recommandé)"
+                    : voiceDeps?.workerPath
+                      ? "Python + script"
+                      : "Aucun worker"}
                 </span>
               </div>
+              <div class="flex justify-between gap-2 py-1">
+                <span class="shrink-0 text-text-muted">Binaire / script</span>
+                <span
+                  class="truncate text-right text-[11px] {voiceDeps?.workerPath
+                    ? 'text-accent-mint'
+                    : 'text-danger'}"
+                  title={voiceDeps?.workerPath}
+                >
+                  {voiceDeps?.workerPath
+                    ? voiceDeps.workerPath.split(/[/\\]/).pop()
+                    : "Introuvable"}
+                </span>
+              </div>
+              {#if voiceDeps?.mode !== "sidecar"}
+                <div class="flex justify-between py-1">
+                  <span class="text-text-muted">Python</span>
+                  <span class="truncate text-right text-[11px]" title={voiceDeps?.pythonPath}>
+                    {voiceDeps?.pythonFound ? voiceDeps.pythonPath : "Non trouvé"}
+                  </span>
+                </div>
+                <div class="flex justify-between py-1">
+                  <span class="text-text-muted">Dépendances pip</span>
+                  <span class={voiceDeps?.depsOk ? "text-accent-mint" : "text-danger"}>
+                    {voiceDeps?.depsOk ? "OK" : "Manquantes"}
+                  </span>
+                </div>
+              {:else}
+                <div class="flex justify-between py-1">
+                  <span class="text-text-muted">Python système</span>
+                  <span class="text-text-muted">Non requis</span>
+                </div>
+              {/if}
               <div class="flex justify-between py-1">
                 <span class="text-text-muted">Modèle en mémoire</span>
                 <span>{voiceStatus?.modelLoaded ? "Chargé ✓" : voiceStatus?.modelLoading ? "Chargement…" : "Non chargé"}</span>
@@ -657,13 +771,17 @@
           {/if}
 
           <div class="flex flex-wrap gap-2">
-            {#if !voiceDeps?.depsOk}
+            {#if voiceDeps?.mode !== "sidecar" && !voiceDeps?.depsOk}
               <button type="button" class="rounded-2xl bg-accent-mint/40 px-3 py-2 text-xs font-medium hover:bg-accent-mint/60 disabled:opacity-50" disabled={busy} onclick={installVoiceDeps}>Installer dépendances (pip)</button>
             {/if}
             <button type="button" class="rounded-2xl bg-accent-lavender/40 px-3 py-2 text-xs font-medium hover:bg-accent-lavender/60 disabled:opacity-50" disabled={busy || !voiceDeps?.depsOk} onclick={preloadWhisper}>
               Télécharger / vérifier Whisper
             </button>
           </div>
+          <p class="text-[10px] text-text-muted">
+            Ce bouton ne lance ni pip ni Python : il demande au worker (exe ou script) de charger le
+            modèle choisi et de le mettre en cache sous Documents/CyberScribeNote/models.
+          </p>
 
           <div class="space-y-1">
             <p class="text-xs text-text-muted">Cache Whisper · {config.whisperModel}</p>
@@ -725,7 +843,7 @@
 
           <button
             type="button"
-            class="w-full rounded-2xl bg-accent-mint/40 py-2 text-xs font-medium hover:bg-accent-mint/60 disabled:opacity-50"
+            class="btn-primary w-full py-2.5 text-xs"
             disabled={busy || !voiceDeps?.depsOk}
             onclick={applyVoiceConfig}
           >

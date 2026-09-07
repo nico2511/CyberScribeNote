@@ -53,6 +53,8 @@ impl Default for VoiceConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VoiceDepsStatus {
+    /// `"sidecar"` = voice_worker.exe ; `"python"` = script + Python système.
+    pub mode: String,
     pub python_found: bool,
     pub python_path: String,
     pub deps_ok: bool,
@@ -128,6 +130,38 @@ pub fn whisper_models_dir() -> PathBuf {
 }
 
 impl VoiceState {
+    /// Sidecar compilé (PyInstaller) — priorité sur Python système.
+    pub fn worker_exe_path(app: Option<&AppHandle>) -> Option<PathBuf> {
+        let mut candidates: Vec<PathBuf> = Vec::new();
+
+        if let Some(handle) = app {
+            if let Ok(resource_dir) = handle.path().resource_dir() {
+                candidates.push(resource_dir.join("voice_worker.exe"));
+                candidates.push(resource_dir.join("voice").join("voice_worker.exe"));
+            }
+        }
+
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(parent) = exe.parent() {
+                candidates.push(parent.join("voice_worker.exe"));
+                candidates.push(parent.join("voice").join("voice_worker.exe"));
+                candidates.push(parent.join("binaries").join("voice-worker-x86_64-pc-windows-msvc.exe"));
+            }
+        }
+
+        let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        candidates.push(dev.join("../voice/voice_worker.exe"));
+        candidates.push(dev.join("../voice/dist/voice_worker.exe"));
+        candidates.push(dev.join("binaries/voice-worker-x86_64-pc-windows-msvc.exe"));
+
+        for c in candidates {
+            if c.exists() {
+                return Some(c.canonicalize().unwrap_or(c));
+            }
+        }
+        None
+    }
+
     pub fn worker_script_path(app: Option<&AppHandle>) -> Result<PathBuf, String> {
         if let Some(handle) = app {
             if let Ok(resource_dir) = handle.path().resource_dir() {
@@ -195,17 +229,32 @@ impl VoiceState {
     }
 
     pub fn check_deps(app: Option<&AppHandle>) -> VoiceDepsStatus {
+        if let Some(exe) = Self::worker_exe_path(app) {
+            return VoiceDepsStatus {
+                mode: "sidecar".into(),
+                python_found: false,
+                python_path: String::new(),
+                deps_ok: true,
+                worker_path: exe.to_string_lossy().to_string(),
+                error: None,
+            };
+        }
+
         let worker_path = Self::worker_script_path(app)
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
 
         let Some(python) = Self::find_python() else {
             return VoiceDepsStatus {
+                mode: "python".into(),
                 python_found: false,
                 python_path: String::new(),
                 deps_ok: false,
                 worker_path,
-                error: Some("Python introuvable (installez Python 3.10+)".into()),
+                error: Some(
+                    "Ni sidecar voice_worker.exe ni Python. Compilez le sidecar (voice/build_sidecar.ps1) ou installez Python 3.10+."
+                        .into(),
+                ),
             };
         };
 
@@ -217,6 +266,7 @@ impl VoiceState {
 
         match check {
             Ok(output) if output.status.success() => VoiceDepsStatus {
+                mode: "python".into(),
                 python_found: true,
                 python_path: python,
                 deps_ok: true,
@@ -224,6 +274,7 @@ impl VoiceState {
                 error: None,
             },
             Ok(output) => VoiceDepsStatus {
+                mode: "python".into(),
                 python_found: true,
                 python_path: python,
                 deps_ok: false,
@@ -234,6 +285,7 @@ impl VoiceState {
                 )),
             },
             Err(e) => VoiceDepsStatus {
+                mode: "python".into(),
                 python_found: true,
                 python_path: python,
                 deps_ok: false,
@@ -322,25 +374,34 @@ impl VoiceState {
     pub fn start_worker(&mut self, app: &AppHandle, voice: &VoiceConfig) -> Result<(), String> {
         self.stop_worker();
 
-        let script = Self::worker_script_path(Some(app))?;
-        let python = Self::find_python().ok_or("Python introuvable")?;
+        let mut child = if let Some(exe) = Self::worker_exe_path(Some(app)) {
+            let mut cmd = hidden_command(exe.to_str().ok_or("Chemin sidecar invalide")?);
+            cmd.stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            cmd.env("PYTHONUTF8", "1");
+            cmd.env("PYTHONIOENCODING", "utf-8");
+            cmd.env("PYTHONUNBUFFERED", "1");
+            cmd.spawn()
+                .map_err(|e| format!("Impossible de lancer le sidecar ({}) : {e}", exe.display()))?
+        } else {
+            let script = Self::worker_script_path(Some(app))?;
+            let python = Self::find_python().ok_or(
+                "Python introuvable — compilez voice_worker.exe (voice/build_sidecar.ps1) ou installez Python.",
+            )?;
 
-        let mut cmd = hidden_command(&python);
-        // python_path is already the absolute executable — no `py -3`
-        cmd.arg("-u")
-            .arg(&script)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        // Force UTF-8 + unbuffered for Windows hidden console
-        cmd.env("PYTHONUTF8", "1");
-        cmd.env("PYTHONIOENCODING", "utf-8");
-        cmd.env("PYTHONUNBUFFERED", "1");
-
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("Impossible de lancer le worker ({python}) : {e}"))?;
+            let mut cmd = hidden_command(&python);
+            cmd.arg("-u")
+                .arg(&script)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            cmd.env("PYTHONUTF8", "1");
+            cmd.env("PYTHONIOENCODING", "utf-8");
+            cmd.env("PYTHONUNBUFFERED", "1");
+            cmd.spawn()
+                .map_err(|e| format!("Impossible de lancer le worker ({python}) : {e}"))?
+        };
         let stdin = child.stdin.take().ok_or("stdin worker indisponible")?;
         let stdout = child.stdout.take().ok_or("stdout worker indisponible")?;
         let stderr = child.stderr.take();

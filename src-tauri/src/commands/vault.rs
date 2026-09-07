@@ -3,28 +3,6 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const WELCOME_NOTE: &str = r#"---
-title: Bienvenue
-tags: [accueil]
-created: 2026-09-01
----
-
-# Bienvenue dans CyberScribeNote
-
-Votre coffre de notes **100 % local** est prêt.
-
-## Premiers pas
-
-- Créez des dossiers et notes depuis la barre latérale
-- Éditez en Markdown — sauvegarde automatique
-- **Ctrl+T** : recherche rapide
-- Bouton **IA** : résumer via Ollama (localhost:11434)
-
-## Philosophie
-
-Local • Privé • Vocal • Minimaliste • Doux pour les yeux
-"#;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VaultEntry {
@@ -109,15 +87,14 @@ fn ensure_vault() -> Result<PathBuf, String> {
     let root = vault_root()?;
     fs::create_dir_all(root.join("media")).map_err(|e| e.to_string())?;
     fs::create_dir_all(root.join("assets")).map_err(|e| e.to_string())?;
-
-    let welcome = root.join("Bienvenue.md");
-    if !welcome.exists() {
-        fs::write(&welcome, WELCOME_NOTE).map_err(|e| e.to_string())?;
-    }
+    // Pas de note Bienvenue forcée — splash UI au premier lancement.
     Ok(root)
 }
 
 fn is_hidden_media_dir(name: &str, path: &Path, parent: &Path, root: &Path) -> bool {
+    if name == ".history" {
+        return true;
+    }
     if name == "_media" && path.is_dir() {
         return true;
     }
@@ -322,11 +299,217 @@ pub fn read_note(relative_path: String) -> Result<String, String> {
 
 #[tauri::command]
 pub fn write_note(relative_path: String, content: String) -> Result<(), String> {
+    let root = ensure_vault()?;
     let path = resolve_path(&relative_path)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
+
+    let cfg = crate::commands::config::load_config();
+    if cfg.note_history_enabled && path.is_file() {
+        if let Ok(prev) = fs::read_to_string(&path) {
+            if prev != content {
+                let _ = push_note_snapshot(&root, &relative_path, &prev, cfg.note_history_max);
+            }
+        }
+    }
+
     fs::write(&path, content).map_err(|e| e.to_string())
+}
+
+fn history_key(relative: &str) -> String {
+    relative.replace('\\', "/").replace('/', "__")
+}
+
+fn history_dir(root: &Path, relative: &str) -> PathBuf {
+    root.join(".history").join(history_key(relative))
+}
+
+fn push_note_snapshot(
+    root: &Path,
+    relative: &str,
+    content: &str,
+    max_versions: u32,
+) -> Result<(), String> {
+    let dir = history_dir(root, relative);
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let stamp = format!(
+        "{}-{:03}",
+        chrono::Local::now().format("%Y%m%d-%H%M%S"),
+        chrono::Local::now().timestamp_subsec_millis() % 1000
+    );
+    let file = dir.join(format!("{stamp}.md"));
+    fs::write(&file, content).map_err(|e| e.to_string())?;
+
+    let max = max_versions.max(1) as usize;
+    let mut versions: Vec<_> = fs::read_dir(&dir)
+        .map_err(|e| e.to_string())?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("md"))
+        .collect();
+    versions.sort();
+    while versions.len() > max {
+        if let Some(old) = versions.first() {
+            let _ = fs::remove_file(old);
+            versions.remove(0);
+        } else {
+            break;
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteHistoryEntry {
+    pub id: String,
+    pub label: String,
+    pub bytes: u64,
+}
+
+#[tauri::command]
+pub fn list_note_history(relative_path: String) -> Result<Vec<NoteHistoryEntry>, String> {
+    let root = ensure_vault()?;
+    let dir = history_dir(&root, &relative_path);
+    if !dir.is_dir() {
+        return Ok(vec![]);
+    }
+    let mut out = Vec::new();
+    for entry in fs::read_dir(&dir).map_err(|e| e.to_string())?.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        let id = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if id.is_empty() {
+            continue;
+        }
+        let bytes = entry.metadata().map(|m| m.len()).unwrap_or(0);
+        let label = format_history_label(&id);
+        out.push(NoteHistoryEntry { id, label, bytes });
+    }
+    out.sort_by(|a, b| b.id.cmp(&a.id));
+    Ok(out)
+}
+
+fn format_history_label(id: &str) -> String {
+    // 20260907-081530-123 → 07/09/2026 08:15:30
+    let parts: Vec<_> = id.split('-').collect();
+    if parts.len() >= 2 && parts[0].len() == 8 && parts[1].len() >= 6 {
+        let d = parts[0];
+        let t = &parts[1][..6];
+        return format!(
+            "{}/{}/{} {}:{}:{}",
+            &d[6..8],
+            &d[4..6],
+            &d[0..4],
+            &t[0..2],
+            &t[2..4],
+            &t[4..6]
+        );
+    }
+    id.to_string()
+}
+
+#[tauri::command]
+pub fn read_note_version(relative_path: String, version_id: String) -> Result<String, String> {
+    let root = ensure_vault()?;
+    if version_id.contains("..") || version_id.contains('/') || version_id.contains('\\') {
+        return Err("Identifiant de version invalide".into());
+    }
+    let path = history_dir(&root, &relative_path).join(format!("{version_id}.md"));
+    if !path.is_file() {
+        return Err("Version introuvable".into());
+    }
+    fs::read_to_string(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn restore_note_version(relative_path: String, version_id: String) -> Result<String, String> {
+    let root = ensure_vault()?;
+    let cfg = crate::commands::config::load_config();
+    let version = read_note_version(relative_path.clone(), version_id)?;
+    let path = resolve_path(&relative_path)?;
+    if cfg.note_history_enabled && path.is_file() {
+        if let Ok(prev) = fs::read_to_string(&path) {
+            let _ = push_note_snapshot(&root, &relative_path, &prev, cfg.note_history_max);
+        }
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::write(&path, &version).map_err(|e| e.to_string())?;
+    Ok(version)
+}
+
+fn collect_txt_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(rd) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in rd.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name == ".history" || name == "media" || name == "assets" || name == "_media" {
+            continue;
+        }
+        if path.is_dir() {
+            collect_txt_files(&path, out);
+            continue;
+        }
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        if ext == "txt" || ext == "text" {
+            out.push(path);
+        }
+    }
+}
+
+fn txt_body_to_markdown(stem: &str, body: &str) -> String {
+    let body = body.replace("\r\n", "\n").replace('\r', "\n");
+    if body.trim_start().starts_with("---") {
+        return body;
+    }
+    let title = stem.replace('_', " ");
+    format!(
+        "---\ntitle: {title}\ntags: [import, txt]\ncreated: {}\n---\n\n# {title}\n\n{body}",
+        chrono::Local::now().format("%Y-%m-%d"),
+    )
+}
+
+/// Parcourt le vault : chaque .txt sans .md jumeau → crée la copie .md (conserve le .txt).
+#[tauri::command]
+pub fn sync_txt_notes() -> Result<Vec<String>, String> {
+    let root = ensure_vault()?;
+    let mut txts = Vec::new();
+    collect_txt_files(&root, &mut txts);
+    let mut created = Vec::new();
+
+    for txt in txts {
+        let Some(stem) = txt.file_stem().map(|s| s.to_string_lossy().to_string()) else {
+            continue;
+        };
+        let md = txt.with_extension("md");
+        if md.exists() {
+            continue;
+        }
+        let body = fs::read_to_string(&txt).map_err(|e| e.to_string())?;
+        let content = txt_body_to_markdown(&stem, &body);
+        fs::write(&md, content).map_err(|e| e.to_string())?;
+        let relative = md
+            .strip_prefix(&root)
+            .map_err(|e| e.to_string())?
+            .to_string_lossy()
+            .replace('\\', "/");
+        created.push(relative);
+    }
+    Ok(created)
 }
 
 #[tauri::command]
@@ -367,6 +550,76 @@ pub fn create_note(parent_path: String, name: String) -> Result<String, String> 
     Ok(relative)
 }
 
+/// Importe des fichiers .txt (ex. export Nextcloud) vers des notes .md du vault.
+#[tauri::command]
+pub fn import_text_files(paths: Vec<String>, parent_path: String) -> Result<Vec<String>, String> {
+    let root = ensure_vault()?;
+    let parent = if parent_path.trim().is_empty() {
+        root.clone()
+    } else {
+        let p = resolve_path(parent_path.trim())?;
+        if !p.is_dir() {
+            return Err("La destination doit être un dossier".into());
+        }
+        p
+    };
+
+    let mut created = Vec::new();
+    for raw in paths {
+        let source = PathBuf::from(raw.trim());
+        if !source.is_file() {
+            continue;
+        }
+        let ext = source
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        if ext != "txt" && ext != "text" && ext != "md" {
+            continue;
+        }
+
+        let stem = source
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Note importée".into());
+        let safe = sanitize_name(&stem).unwrap_or_else(|_| "Note_importee".into());
+        let mut file_name = format!("{safe}.md");
+        let mut dest = parent.join(&file_name);
+        let mut n = 2;
+        while dest.exists() {
+            file_name = format!("{safe}-{n}.md");
+            dest = parent.join(&file_name);
+            n += 1;
+        }
+
+        let body = fs::read_to_string(&source).map_err(|e| e.to_string())?;
+        let body = body.replace("\r\n", "\n").replace('\r', "\n");
+        let title = safe.replace('_', " ");
+        let content = if body.trim_start().starts_with("---") {
+            body
+        } else {
+            format!(
+                "---\ntitle: {title}\ntags: [import]\ncreated: {}\n---\n\n# {title}\n\n{body}",
+                chrono::Local::now().format("%Y-%m-%d"),
+            )
+        };
+
+        fs::write(&dest, content).map_err(|e| e.to_string())?;
+        let relative = dest
+            .strip_prefix(&root)
+            .map_err(|e| e.to_string())?
+            .to_string_lossy()
+            .replace('\\', "/");
+        created.push(relative);
+    }
+
+    if created.is_empty() {
+        return Err("Aucun fichier .txt / .md importé.".into());
+    }
+    Ok(created)
+}
+
 #[tauri::command]
 pub fn create_folder(parent_path: String, name: String) -> Result<String, String> {
     let root = ensure_vault()?;
@@ -396,10 +649,33 @@ pub fn create_folder(parent_path: String, name: String) -> Result<String, String
 pub fn delete_item(relative_path: String) -> Result<(), String> {
     let path = resolve_path(&relative_path)?;
     if path.is_dir() {
-        fs::remove_dir_all(&path).map_err(|e| e.to_string())
-    } else {
-        fs::remove_file(&path).map_err(|e| e.to_string())
+        return fs::remove_dir_all(&path).map_err(|e| e.to_string());
     }
+
+    // Si on supprime un .md issu du sync TXT, retirer aussi le jumeau .txt/.text
+    // sinon la prochaine sync recrée immédiatement le .md.
+    let is_md = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("md"))
+        .unwrap_or(false);
+    if is_md {
+        for ext in ["txt", "text"] {
+            let sibling = path.with_extension(ext);
+            if sibling.is_file() {
+                let _ = fs::remove_file(&sibling);
+            }
+        }
+        // Nettoyer l'historique local de la note (best-effort).
+        if let Ok(root) = ensure_vault() {
+            let hist = history_dir(&root, &relative_path);
+            if hist.is_dir() {
+                let _ = fs::remove_dir_all(&hist);
+            }
+        }
+    }
+
+    fs::remove_file(&path).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
