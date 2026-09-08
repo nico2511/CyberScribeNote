@@ -17,6 +17,7 @@
     onCreateFolder: (parentPath: string) => void;
     onDelete: (path: string) => void;
     onMove: (sourcePath: string, destinationParent: string) => void | Promise<void>;
+    onRename?: (path: string) => void | Promise<void>;
     draggingItem?: VaultDragPayload | null;
     onDragStart?: (payload: VaultDragPayload) => void;
     onDragEnd?: () => void;
@@ -33,6 +34,7 @@
     onCreateFolder,
     onDelete,
     onMove,
+    onRename,
     draggingItem = null,
     onDragStart,
     onDragEnd,
@@ -179,6 +181,7 @@
                 {onCreateFolder}
                 {onDelete}
                 {onMove}
+                {onRename}
                 {draggingItem}
                 {onDragStart}
                 {onDragEnd}
@@ -215,6 +218,12 @@
             <PixelIcon name="note" size={16} class="sidebar-icon text-text" />
             <span class="truncate">{entry.name.replace(/\.md$/, "")}</span>
           </button>
+          <button
+            type="button"
+            class="hidden rounded-lg px-1.5 py-0.5 text-xs text-text-muted hover:bg-accent-blue/30 group-hover:block"
+            title="Renommer"
+            onclick={() => onRename?.(entry.path)}
+          >✎</button>
           <button
             type="button"
             class="mr-0.5 hidden rounded-lg px-1.5 py-0.5 text-xs text-danger hover:bg-danger/20 group-hover:block"

@@ -1,32 +1,43 @@
-use crate::commands::config::host_url;
 use crate::commands::vault::vault_root;
 use crate::fs_util::atomic_write;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 const EMBED_MODEL: &str = "nomic-embed-text";
 const CHUNK_CHARS: usize = 700;
 const CHUNK_OVERLAP: usize = 80;
 const TOP_K: usize = 5;
+const INDEX_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RagChunk {
-    pub path: String,
-    pub title: String,
     pub text: String,
     pub embedding: Vec<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RagNoteEntry {
+    pub path: String,
+    pub title: String,
+    pub content_hash: String,
+    pub mtime_secs: u64,
+    pub chunks: Vec<RagChunk>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RagIndex {
+    pub version: u32,
     pub model: String,
     pub updated_at: String,
-    pub chunk_count: usize,
-    pub note_count: usize,
-    pub chunks: Vec<RagChunk>,
+    pub vault_path: String,
+    pub notes: Vec<RagNoteEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,14 +60,26 @@ pub struct RagHit {
     pub score: f32,
 }
 
-fn index_path() -> PathBuf {
-    dirs::document_dir()
-        .map(|d| d.join("CyberScribeNote").join("rag_index.json"))
-        .unwrap_or_else(|| PathBuf::from("rag_index.json"))
+fn index_path() -> Result<PathBuf, String> {
+    let root = vault_root()?;
+    Ok(root.join(".rag").join("index.json"))
+}
+
+fn content_hash(body: &str) -> String {
+    format!("{:x}", Sha256::digest(body.as_bytes()))
+}
+
+fn file_mtime_secs(path: &Path) -> u64 {
+    fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 async fn embed_text(client: &reqwest::Client, text: &str) -> Result<Vec<f32>, String> {
-    let host = host_url();
+    let host = crate::commands::config::host_url();
     let response = client
         .post(format!("{host}/api/embeddings"))
         .json(&serde_json::json!({
@@ -148,7 +171,6 @@ fn chunk_text(text: &str) -> Vec<String> {
     while start < chars.len() {
         let mut end = (start + CHUNK_CHARS).min(chars.len());
         if end < chars.len() {
-            // Coupe sur un espace proche de la fin
             let window_start = start + CHUNK_CHARS / 2;
             if let Some(rel) = chars[window_start..end]
                 .iter()
@@ -173,7 +195,7 @@ fn chunk_text(text: &str) -> Vec<String> {
     chunks
 }
 
-fn collect_markdown_files(dir: &std::path::Path, root: &std::path::Path, out: &mut Vec<PathBuf>) {
+fn collect_markdown_files(dir: &Path, root: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
@@ -192,32 +214,37 @@ fn collect_markdown_files(dir: &std::path::Path, root: &std::path::Path, out: &m
 }
 
 fn load_index() -> Option<RagIndex> {
-    let path = index_path();
+    let path = index_path().ok()?;
     let raw = fs::read_to_string(path).ok()?;
-    serde_json::from_str(&raw).ok()
+    let idx: RagIndex = serde_json::from_str(&raw).ok()?;
+    if idx.version != INDEX_VERSION {
+        return None;
+    }
+    Some(idx)
 }
 
 fn save_index(index: &RagIndex) -> Result<(), String> {
-    let path = index_path();
+    let path = index_path()?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    let json = serde_json::to_string_pretty(index).map_err(|e| e.to_string())?;
+    let json = serde_json::to_string(index).map_err(|e| e.to_string())?;
     atomic_write(&path, json.as_bytes())
 }
 
-#[tauri::command]
-pub fn rag_status() -> RagStatus {
-    let path = index_path();
-    match load_index() {
-        Some(idx) => RagStatus {
-            indexed: !idx.chunks.is_empty(),
-            model: idx.model,
-            chunk_count: idx.chunk_count,
-            note_count: idx.note_count,
-            updated_at: Some(idx.updated_at),
-            index_path: path.to_string_lossy().to_string(),
-        },
+fn status_from_index(path: &Path, idx: Option<RagIndex>) -> RagStatus {
+    match idx {
+        Some(idx) => {
+            let chunk_count: usize = idx.notes.iter().map(|n| n.chunks.len()).sum();
+            RagStatus {
+                indexed: chunk_count > 0,
+                model: idx.model,
+                chunk_count,
+                note_count: idx.notes.len(),
+                updated_at: Some(idx.updated_at),
+                index_path: path.to_string_lossy().to_string(),
+            }
+        }
         None => RagStatus {
             indexed: false,
             model: EMBED_MODEL.into(),
@@ -227,6 +254,12 @@ pub fn rag_status() -> RagStatus {
             index_path: path.to_string_lossy().to_string(),
         },
     }
+}
+
+#[tauri::command]
+pub fn rag_status() -> Result<RagStatus, String> {
+    let path = index_path()?;
+    Ok(status_from_index(&path, load_index()))
 }
 
 #[tauri::command]
@@ -241,11 +274,26 @@ pub async fn rag_reindex() -> Result<RagStatus, String> {
         .build()
         .map_err(|e| e.to_string())?;
 
-    // Warm-up / vérifie le modèle
     let _ = embed_text(&client, "ping cyberscribe rag").await?;
 
-    let mut chunks: Vec<RagChunk> = Vec::new();
-    let mut note_count = 0usize;
+    let existing = load_index().unwrap_or(RagIndex {
+        version: INDEX_VERSION,
+        model: EMBED_MODEL.into(),
+        updated_at: String::new(),
+        vault_path: root.to_string_lossy().to_string(),
+        notes: vec![],
+    });
+
+    let vault_str = root.to_string_lossy().to_string();
+    let same_vault = existing.vault_path == vault_str;
+    let mut prior: HashMap<String, RagNoteEntry> = HashMap::new();
+    if same_vault {
+        for note in existing.notes {
+            prior.insert(note.path.clone(), note);
+        }
+    }
+
+    let mut notes: Vec<RagNoteEntry> = Vec::new();
 
     for file in files {
         let Ok(raw) = fs::read_to_string(&file) else {
@@ -260,37 +308,59 @@ pub async fn rag_reindex() -> Result<RagStatus, String> {
         }
 
         let body = strip_frontmatter(&raw);
+        let hash = content_hash(&body);
+        let mtime = file_mtime_secs(&file);
+
+        if let Some(prev) = prior.get(&relative) {
+            if prev.content_hash == hash && prev.mtime_secs == mtime && !prev.chunks.is_empty() {
+                notes.push(prev.clone());
+                continue;
+            }
+        }
+
         let title = note_title(&relative, &body);
         let pieces = chunk_text(&body);
         if pieces.is_empty() {
             continue;
         }
-        note_count += 1;
 
+        let mut chunks = Vec::new();
         for piece in pieces {
             let embedding = embed_text(&client, &piece).await?;
             chunks.push(RagChunk {
-                path: relative.clone(),
-                title: title.clone(),
                 text: piece,
                 embedding,
             });
         }
+
+        notes.push(RagNoteEntry {
+            path: relative,
+            title,
+            content_hash: hash,
+            mtime_secs: mtime,
+            chunks,
+        });
     }
 
+    notes.sort_by(|a, b| a.path.cmp(&b.path));
+
     let index = RagIndex {
+        version: INDEX_VERSION,
         model: EMBED_MODEL.into(),
         updated_at: chrono::Local::now().to_rfc3339(),
-        chunk_count: chunks.len(),
-        note_count,
-        chunks,
+        vault_path: vault_str,
+        notes,
     };
     save_index(&index)?;
-    Ok(rag_status())
+    rag_status()
 }
 
 #[tauri::command]
-pub async fn rag_query(query: String, top_k: Option<usize>, exclude_path: Option<String>) -> Result<Vec<RagHit>, String> {
+pub async fn rag_query(
+    query: String,
+    top_k: Option<usize>,
+    exclude_path: Option<String>,
+) -> Result<Vec<RagHit>, String> {
     let q = query.trim();
     if q.len() < 8 {
         return Ok(vec![]);
@@ -299,7 +369,7 @@ pub async fn rag_query(query: String, top_k: Option<usize>, exclude_path: Option
     let index = load_index().ok_or_else(|| {
         "Index RAG absent — lancez « Indexer le vault » dans Réglages.".to_string()
     })?;
-    if index.chunks.is_empty() {
+    if index.notes.is_empty() {
         return Ok(vec![]);
     }
 
@@ -312,20 +382,36 @@ pub async fn rag_query(query: String, top_k: Option<usize>, exclude_path: Option
     let exclude = exclude_path.unwrap_or_default();
     let k = top_k.unwrap_or(TOP_K).clamp(1, 12);
 
-    let mut scored: Vec<RagHit> = index
-        .chunks
-        .iter()
-        .filter(|c| exclude.is_empty() || c.path != exclude)
-        .map(|c| RagHit {
-            path: c.path.clone(),
-            title: c.title.clone(),
-            text: c.text.clone(),
-            score: cosine(&query_vec, &c.embedding),
-        })
-        .filter(|h| h.score > 0.25)
-        .collect();
+    let mut scored: Vec<RagHit> = Vec::new();
+    for note in &index.notes {
+        if !exclude.is_empty() && note.path == exclude {
+            continue;
+        }
+        for chunk in &note.chunks {
+            let score = cosine(&query_vec, &chunk.embedding);
+            if score > 0.25 {
+                scored.push(RagHit {
+                    path: note.path.clone(),
+                    title: note.title.clone(),
+                    text: chunk.text.clone(),
+                    score,
+                });
+            }
+        }
+    }
 
     scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
     scored.truncate(k);
     Ok(scored)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn content_hash_is_stable() {
+        assert_eq!(content_hash("hello"), content_hash("hello"));
+        assert_ne!(content_hash("a"), content_hash("b"));
+    }
 }

@@ -16,6 +16,7 @@
     onCreateFolder: (parentPath: string) => void;
     onDelete: (path: string) => void;
     onMove: (sourcePath: string, destinationParent: string) => void | Promise<void>;
+    onRename?: (path: string) => void | Promise<void>;
     onImportText?: () => void | Promise<void>;
   }
 
@@ -29,6 +30,7 @@
     onCreateFolder,
     onDelete,
     onMove,
+    onRename,
     onImportText,
   }: Props = $props();
 
@@ -119,6 +121,7 @@
         {onCreateFolder}
         {onDelete}
         {onMove}
+        {onRename}
         {draggingItem}
         onDragStart={handleDragStart}
         onDragEnd={handleDragEnd}

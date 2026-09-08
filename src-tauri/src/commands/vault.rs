@@ -387,12 +387,120 @@ pub fn write_note(relative_path: String, content: String) -> Result<(), String> 
     atomic_write(&path, content.as_bytes())
 }
 
-fn history_key(relative: &str) -> String {
+fn legacy_history_key(relative: &str) -> String {
     relative.replace('\\', "/").replace('/', "__")
+}
+
+fn history_key(relative: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let norm = relative.replace('\\', "/");
+    format!("{:x}", Sha256::digest(norm.as_bytes()))
 }
 
 fn history_dir(root: &Path, relative: &str) -> PathBuf {
     root.join(".history").join(history_key(relative))
+}
+
+/// Résout le dossier snapshots ; migre l'ancien format `a__b.md` si besoin.
+fn resolve_history_dir(root: &Path, relative: &str) -> PathBuf {
+    let dir = history_dir(root, relative);
+    if dir.is_dir() {
+        return dir;
+    }
+    let legacy = root.join(".history").join(legacy_history_key(relative));
+    if legacy.is_dir() {
+        if let Some(parent) = dir.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        if fs::rename(&legacy, &dir).is_ok() {
+            return dir;
+        }
+        // Migration best-effort : continuer à lire l'ancien dossier.
+        return legacy;
+    }
+    dir
+}
+
+fn migrate_note_history(root: &Path, old_relative: &str, new_relative: &str) -> Result<(), String> {
+    let old_norm = old_relative.replace('\\', "/");
+    let new_norm = new_relative.replace('\\', "/");
+    if old_norm == new_norm {
+        return Ok(());
+    }
+
+    let old_dir = resolve_history_dir(root, old_relative);
+    let legacy = root.join(".history").join(legacy_history_key(old_relative));
+    let source_hist = if old_dir.is_dir() {
+        old_dir
+    } else if legacy.is_dir() {
+        legacy
+    } else {
+        return Ok(());
+    };
+
+    let dest = history_dir(root, new_relative);
+    if dest.exists() {
+        fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
+        for entry in fs::read_dir(&source_hist).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let target = dest.join(entry.file_name());
+            if !target.exists() {
+                fs::rename(entry.path(), target).map_err(|e| e.to_string())?;
+            }
+        }
+        let _ = fs::remove_dir_all(&source_hist);
+    } else {
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        fs::rename(&source_hist, &dest).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn collect_md_relative(dir: &Path, root: &Path, out: &mut Vec<String>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') || name == "_media" || name == "assets" || name == "media" {
+            continue;
+        }
+        if path.is_dir() {
+            collect_md_relative(&path, root, out);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
+            let relative = path
+                .strip_prefix(root)
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
+            if !relative.is_empty() {
+                out.push(relative);
+            }
+        }
+    }
+}
+
+fn migrate_folder_histories(root: &Path, old_prefix: &str, new_prefix: &str) -> Result<(), String> {
+    let old_p = old_prefix.trim_end_matches('/');
+    let new_p = new_prefix.trim_end_matches('/');
+    let dest_dir = root.join(new_p);
+    if !dest_dir.is_dir() {
+        return Ok(());
+    }
+    let mut notes = Vec::new();
+    collect_md_relative(&dest_dir, root, &mut notes);
+    for new_rel in notes {
+        if new_rel == new_p {
+            continue;
+        }
+        if let Some(suffix) = new_rel.strip_prefix(&format!("{new_p}/")) {
+            let old_rel = format!("{old_p}/{suffix}");
+            migrate_note_history(root, &old_rel, &new_rel)?;
+        }
+    }
+    Ok(())
 }
 
 fn push_note_snapshot(
@@ -401,7 +509,7 @@ fn push_note_snapshot(
     content: &str,
     max_versions: u32,
 ) -> Result<(), String> {
-    let dir = history_dir(root, relative);
+    let dir = resolve_history_dir(root, relative);
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let stamp = format!(
         "{}-{:03}",
@@ -441,7 +549,7 @@ pub struct NoteHistoryEntry {
 #[tauri::command]
 pub fn list_note_history(relative_path: String) -> Result<Vec<NoteHistoryEntry>, String> {
     let root = ensure_vault()?;
-    let dir = history_dir(&root, &relative_path);
+    let dir = resolve_history_dir(&root, &relative_path);
     if !dir.is_dir() {
         return Ok(vec![]);
     }
@@ -491,7 +599,7 @@ pub fn read_note_version(relative_path: String, version_id: String) -> Result<St
     if version_id.contains("..") || version_id.contains('/') || version_id.contains('\\') {
         return Err("Identifiant de version invalide".into());
     }
-    let path = history_dir(&root, &relative_path).join(format!("{version_id}.md"));
+    let path = resolve_history_dir(&root, &relative_path).join(format!("{version_id}.md"));
     if !path.is_file() {
         return Err("Version introuvable".into());
     }
@@ -742,7 +850,7 @@ pub fn delete_item(relative_path: String) -> Result<(), String> {
         }
         // Nettoyer l'historique local de la note (best-effort).
         if let Ok(root) = ensure_vault() {
-            let hist = history_dir(&root, &relative_path);
+            let hist = resolve_history_dir(&root, &relative_path);
             if hist.is_dir() {
                 let _ = fs::remove_dir_all(&hist);
             }
@@ -801,11 +909,71 @@ pub fn move_vault_item(relative_path: String, destination_parent: String) -> Res
 
     fs::rename(&source, &dest).map_err(|e| format!("Déplacement impossible : {e}"))?;
 
-    Ok(dest
+    let new_relative = dest
         .strip_prefix(&root)
         .map_err(|e| e.to_string())?
         .to_string_lossy()
-        .replace('\\', "/"))
+        .replace('\\', "/");
+
+    if source.is_file() {
+        let is_md = source
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("md"))
+            .unwrap_or(false);
+        if is_md {
+            migrate_note_history(&root, &relative_path, &new_relative)?;
+        }
+    } else if source.is_dir() {
+        migrate_folder_histories(&root, &relative_path, &new_relative)?;
+    }
+
+    Ok(new_relative)
+}
+
+#[tauri::command]
+pub fn rename_note(relative_path: String, new_name: String) -> Result<String, String> {
+    require_md_extension(&relative_path)?;
+    let root = ensure_vault()?;
+    let source = resolve_path(&relative_path)?;
+    if !source.is_file() {
+        return Err("Ce n'est pas un fichier".into());
+    }
+
+    let safe_name = sanitize_name(&new_name)?;
+    let file_name = if safe_name.ends_with(".md") {
+        safe_name
+    } else {
+        format!("{safe_name}.md")
+    };
+
+    let parent = source
+        .parent()
+        .ok_or("Impossible de déterminer le dossier parent")?;
+    let dest = parent.join(&file_name);
+    if dest.exists() {
+        return Err("Une note avec ce nom existe déjà".into());
+    }
+
+    let new_relative = dest
+        .strip_prefix(&root)
+        .map_err(|e| e.to_string())?
+        .to_string_lossy()
+        .replace('\\', "/");
+
+    migrate_note_history(&root, &relative_path, &new_relative)?;
+
+    fs::rename(&source, &dest).map_err(|e| format!("Renommage impossible : {e}"))?;
+
+    for ext in ["txt", "text"] {
+        let sibling = source.with_extension(ext);
+        if sibling.is_file() {
+            let new_sibling = dest.with_extension(ext);
+            let _ = fs::rename(&sibling, &new_sibling);
+        }
+    }
+
+    Ok(new_relative)
 }
 
 #[tauri::command]
@@ -1004,5 +1172,13 @@ mod tests {
         let png = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00];
         assert!(super::validate_image_magic(&png, "png").is_ok());
         assert!(super::validate_image_magic(&[0x00, 0x01], "png").is_err());
+    }
+
+    #[test]
+    fn history_key_uses_sha256() {
+        let key = super::history_key("folder/note.md");
+        assert_eq!(key.len(), 64);
+        assert_ne!(key, super::legacy_history_key("folder/note.md"));
+        assert_ne!(super::history_key("a/b.md"), super::history_key("a__b.md"));
     }
 }

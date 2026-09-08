@@ -991,6 +991,27 @@
     await refreshVault();
   }
 
+  async function handleRename(path: string) {
+    const current = path.split("/").pop()?.replace(/\.md$/, "") ?? "";
+    const name = prompt("Nouveau nom de la note :", current);
+    if (!name?.trim() || name.trim() === current) return;
+    try {
+      const newPath = await invoke<string>("rename_note", {
+        relativePath: path,
+        newName: name.trim(),
+      });
+      if (selectedPath === path) {
+        selectedPath = newPath;
+      }
+      await refreshVault();
+      statusMessage = `Note renommée : ${name.trim()}`;
+      notify({ kind: "success", title: "Renommage", message: statusMessage, key: "vault-rename" });
+    } catch (e) {
+      statusMessage = String(e);
+      notify({ kind: "error", title: "Renommage impossible", message: String(e), key: "vault-rename" });
+    }
+  }
+
   async function handleMove(sourcePath: string, destinationParent: string) {
     try {
       const newPath = await invoke<string>("move_vault_item", {
@@ -2193,6 +2214,7 @@
       onCreateFolder={handleCreateFolder}
       onDelete={handleDelete}
       onMove={handleMove}
+      onRename={handleRename}
       onImportText={handleImportText}
     />
 
