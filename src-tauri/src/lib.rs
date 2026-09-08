@@ -1,4 +1,6 @@
 mod commands;
+mod fs_util;
+mod net_util;
 
 use commands::{
     create_folder, create_note, delete_item, export_note, get_app_config,
@@ -37,6 +39,9 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(Arc::new(Mutex::new(VoiceState::default())))
         .setup(|app| {
+            if let Err(e) = commands::vault::register_vault_asset_scope(app.handle()) {
+                eprintln!("Asset scope vault: {e}");
+            }
             if let Err(e) = setup_voice(&app.handle()) {
                 eprintln!("Voice setup: {e}");
             }

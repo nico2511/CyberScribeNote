@@ -97,6 +97,7 @@ pub struct VoiceState {
     generation: u64,
     recent_stderr: Vec<String>,
     last_pong: Option<Instant>,
+    json_seen: bool,
     heartbeat_started: bool,
 }
 
@@ -118,6 +119,7 @@ impl Default for VoiceState {
             generation: 0,
             recent_stderr: Vec::new(),
             last_pong: None,
+            json_seen: false,
             heartbeat_started: false,
         }
     }
@@ -331,6 +333,20 @@ impl VoiceState {
         self.status.model_loading = false;
         self.status.model_loaded = false;
         self.last_pong = None;
+        self.json_seen = false;
+    }
+
+    fn note_worker_alive(&mut self) {
+        self.last_pong = Some(Instant::now());
+        self.json_seen = true;
+        if self
+            .status
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("heartbeat") || e.contains("muet"))
+        {
+            self.status.error = None;
+        }
     }
 
     fn send_cmd(&mut self, payload: serde_json::Value) -> Result<(), String> {
@@ -416,13 +432,29 @@ impl VoiceState {
         self.status.hotkey = voice.voice_hotkey.clone();
         self.status.error = None;
         self.last_pong = Some(Instant::now());
+        self.json_seen = false;
 
         let app_handle = app.clone();
         std::thread::spawn(move || {
-            let reader = BufReader::new(stdout);
-            for line in reader.lines().map_while(Result::ok) {
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
-                    handle_worker_event(&app_handle, json);
+            // Lecture binaire : une ligne non-UTF-8 (ctranslate2, etc.) ne doit
+            // pas tuer le reader — sinon plus aucun pong / model loaded.
+            let mut reader = BufReader::new(stdout);
+            let mut buf = Vec::new();
+            loop {
+                buf.clear();
+                match reader.read_until(b'\n', &mut buf) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        let line = String::from_utf8_lossy(&buf);
+                        let line = line.trim();
+                        if line.is_empty() {
+                            continue;
+                        }
+                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
+                            handle_worker_event(&app_handle, json);
+                        }
+                    }
+                    Err(_) => break,
                 }
             }
 
@@ -470,28 +502,36 @@ impl VoiceState {
         if let Some(stderr) = stderr {
             let app_handle = app.clone();
             std::thread::spawn(move || {
-                let reader = BufReader::new(stderr);
-                for line in reader.lines().map_while(Result::ok) {
-                    let trimmed = line.trim().to_string();
-                    if trimmed.is_empty() {
-                        continue;
-                    }
-                    if let Some(state) = app_handle.try_state::<Arc<Mutex<VoiceState>>>() {
-                        if let Ok(mut guard) = state.lock() {
-                            guard.recent_stderr.push(trimmed.clone());
-                            if guard.recent_stderr.len() > 12 {
-                                let overflow = guard.recent_stderr.len() - 12;
-                                guard.recent_stderr.drain(0..overflow);
+                let mut reader = BufReader::new(stderr);
+                let mut buf = Vec::new();
+                loop {
+                    buf.clear();
+                    match reader.read_until(b'\n', &mut buf) {
+                        Ok(0) => break,
+                        Ok(_) => {
+                            let trimmed = String::from_utf8_lossy(&buf).trim().to_string();
+                            if trimmed.is_empty() {
+                                continue;
                             }
+                            if let Some(state) = app_handle.try_state::<Arc<Mutex<VoiceState>>>() {
+                                if let Ok(mut guard) = state.lock() {
+                                    guard.recent_stderr.push(trimmed.clone());
+                                    if guard.recent_stderr.len() > 12 {
+                                        let overflow = guard.recent_stderr.len() - 12;
+                                        guard.recent_stderr.drain(0..overflow);
+                                    }
+                                }
+                            }
+                            let _ = app_handle.emit(
+                                "voice-event",
+                                serde_json::json!({
+                                    "type": "stderr",
+                                    "message": trimmed
+                                }),
+                            );
                         }
+                        Err(_) => break,
                     }
-                    let _ = app_handle.emit(
-                        "voice-event",
-                        serde_json::json!({
-                            "type": "stderr",
-                            "message": trimmed
-                        }),
-                    );
                 }
             });
         }
@@ -518,15 +558,26 @@ impl VoiceState {
             if !guard.status.running || !guard.is_worker_alive() {
                 continue;
             }
-            // Timeout heartbeat : worker ne répond plus
-            if let Some(last) = guard.last_pong {
-                if last.elapsed() > Duration::from_secs(60) {
-                    let msg = "Worker vocal sans réponse (heartbeat). Réglages → Voix → Appliquer.".to_string();
-                    guard.status.error = Some(msg.clone());
-                    let _ = app_handle.emit(
-                        "voice-event",
-                        serde_json::json!({ "type": "error", "message": msg }),
-                    );
+            // Timeout heartbeat : worker ne répond plus (ou stdout muet).
+            if !guard.status.model_loading {
+                if let Some(last) = guard.last_pong {
+                    if last.elapsed() > Duration::from_secs(60) {
+                        let msg = if guard.json_seen {
+                            "Worker vocal sans réponse (heartbeat). Réglages → Voix → Appliquer."
+                                .to_string()
+                        } else {
+                            "Worker vocal muet (aucune réponse JSON). Rebuild du sidecar : .\\voice\\build_sidecar.ps1 — puis redémarrer l'app."
+                                .to_string()
+                        };
+                        let newly = guard.status.error.as_deref() != Some(msg.as_str());
+                        guard.status.error = Some(msg.clone());
+                        if newly {
+                            let _ = app_handle.emit(
+                                "voice-event",
+                                serde_json::json!({ "type": "error", "message": msg }),
+                            );
+                        }
+                    }
                 }
             }
             let _ = guard.send_cmd(serde_json::json!({ "cmd": "ping" }));
@@ -640,6 +691,7 @@ fn handle_worker_event(app: &AppHandle, json: serde_json::Value) {
 
     if let Some(state) = app.try_state::<Arc<Mutex<VoiceState>>>() {
         if let Ok(mut guard) = state.lock() {
+            guard.note_worker_alive();
             match event_type {
                 "recording" => {
                     guard.status.recording =
@@ -659,9 +711,7 @@ fn handle_worker_event(app: &AppHandle, json: serde_json::Value) {
                     guard.status.deps_ok =
                         json.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
                 }
-                "pong" | "ready" => {
-                    guard.last_pong = Some(Instant::now());
-                }
+                "pong" | "ready" | "status" => {}
                 "error" => {
                     // Les messages "transcription en cours" ne sont pas fatals
                     let mut msg = json

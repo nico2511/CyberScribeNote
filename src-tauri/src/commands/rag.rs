@@ -1,5 +1,6 @@
 use crate::commands::config::host_url;
 use crate::commands::vault::vault_root;
+use crate::fs_util::atomic_write;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -202,7 +203,7 @@ fn save_index(index: &RagIndex) -> Result<(), String> {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let json = serde_json::to_string_pretty(index).map_err(|e| e.to_string())?;
-    fs::write(path, json).map_err(|e| e.to_string())
+    atomic_write(&path, json.as_bytes())
 }
 
 #[tauri::command]

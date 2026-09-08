@@ -1,6 +1,6 @@
 [package]
 name = "cyberscribe-note"
-version = "0.4.0"
+version = "0.4.1"
 description = "Prise de notes locale, offline-first, avec IA et voix"
 authors = ["nico2511"]
 edition = "2021"
@@ -25,6 +25,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 futures-util = "0.3"
 tauri-plugin-global-shortcut = "2"
 base64 = "0.22"
+url = "2"
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = "2.4.4"

@@ -21,3 +21,4 @@ src-tauri/binaries/
 *.pyc
 *.spec.bak
 /1
+dist-release/

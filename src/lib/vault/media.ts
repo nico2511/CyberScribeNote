@@ -1,18 +1,26 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 
-/** Résout un href Markdown vers une URL affichable dans le webview Tauri. */
+/** Chemins absolus / UNC interdits — lecture hors vault via asset://. */
+function isAbsoluteOrUnc(href: string): boolean {
+  return /^[a-zA-Z]:[\\/]/.test(href) || href.startsWith("\\\\") || href.startsWith("//");
+}
+
+/** Résout un href Markdown vers une URL affichable dans le webview Tauri (vault uniquement). */
 export function resolveMediaUrl(href: string, notePath: string, vaultPath: string): string {
   const trimmed = href.trim();
   if (!trimmed) return trimmed;
-  if (/^https?:\/\//i.test(trimmed) || trimmed.startsWith("data:") || trimmed.startsWith("asset://")) {
+  if (/^https?:\/\//i.test(trimmed) || trimmed.startsWith("asset://")) {
     return trimmed;
+  }
+  // data: URLs peuvent exfiltrer — refusées dans les notes
+  if (trimmed.startsWith("data:")) {
+    return "";
+  }
+  if (isAbsoluteOrUnc(trimmed)) {
+    return "";
   }
 
   let relative = trimmed.replace(/^\.\//, "");
-
-  if (/^[a-zA-Z]:[\\/]/.test(relative) || relative.startsWith("\\\\")) {
-    return convertFileSrc(relative.replace(/\\/g, "/"));
-  }
 
   const noteDir = notePath.includes("/") ? notePath.slice(0, notePath.lastIndexOf("/")) : "";
   const vaultRelative =
@@ -27,7 +35,12 @@ export function resolveMediaUrl(href: string, notePath: string, vaultPath: strin
     relative = `${noteDir}/${relative}`;
   }
 
-  const absolute = `${vaultPath.replace(/\\/g, "/")}/${relative.replace(/\\/g, "/")}`;
+  if (relative.includes("..")) {
+    return "";
+  }
+
+  const vaultNorm = vaultPath.replace(/\\/g, "/").replace(/\/+$/, "");
+  const absolute = `${vaultNorm}/${relative.replace(/\\/g, "/")}`;
   return convertFileSrc(absolute);
 }
 

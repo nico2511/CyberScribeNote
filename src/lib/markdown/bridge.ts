@@ -2,8 +2,23 @@ import { marked } from "marked";
 import TurndownService from "turndown";
 import { noteBodyRange } from "$lib/note/frontmatter";
 import { resolveMediaUrl } from "$lib/vault/media";
+import { escapeHtml, sanitizeTipTapHtml } from "$lib/markdown/sanitize";
 
 marked.setOptions({ gfm: true, breaks: true });
+
+marked.use({
+  renderer: {
+    /** HTML brut interdit : affiché échappé, puis filtré par DOMPurify. */
+    html({ text }) {
+      return escapeHtml(text);
+    },
+  },
+  hooks: {
+    postprocess(html) {
+      return sanitizeTipTapHtml(html);
+    },
+  },
+});
 
 const turndown = new TurndownService({
   headingStyle: "atx",

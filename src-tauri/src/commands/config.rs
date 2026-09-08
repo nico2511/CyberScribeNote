@@ -2,6 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
+use crate::fs_util::atomic_write;
+use crate::net_util::validate_ollama_host;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {
@@ -113,10 +116,14 @@ pub fn get_app_config() -> Result<AppConfig, String> {
 
 #[tauri::command]
 pub fn save_app_config(config: AppConfig) -> Result<(), String> {
+    let ollama_host = validate_ollama_host(&config.ollama_host)?;
+    let mut config = config;
+    config.ollama_host = ollama_host;
+
     let path = config_path()?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let json = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
-    fs::write(path, json).map_err(|e| e.to_string())
+    atomic_write(&path, json.as_bytes())
 }

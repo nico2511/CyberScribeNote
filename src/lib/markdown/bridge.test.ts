@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractOutline } from "./bridge";
+import { extractOutline, markdownToHtml } from "./bridge";
 import { repairMarkdownProposal, unwrapOuterMarkdownFence } from "./repair";
 
 describe("extractOutline", () => {
@@ -16,6 +16,16 @@ services:
 ## Section
 `;
     expect(extractOutline(md).map((i) => i.text)).toEqual(["Vrai titre", "Section"]);
+  });
+});
+
+describe("markdownToHtml", () => {
+  it("neutralizes raw HTML in markdown", () => {
+    const md = '<img onerror="alert(1)" src=x>\n\n# Titre';
+    const html = markdownToHtml(md, "note.md", "/vault");
+    expect(html).not.toMatch(/<img[^>]*onerror/i);
+    expect(html).toContain("&lt;img");
+    expect(html).toContain("<h1>Titre</h1>");
   });
 });
 

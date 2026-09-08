@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+use crate::net_util::validate_public_http_url;
+use reqwest::redirect::{Attempt, Policy};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PageMeta {
@@ -100,7 +103,7 @@ fn extract_site_name(html: &str) -> Option<String> {
 
 fn looks_like_url(url: &str) -> bool {
     let u = url.trim().to_lowercase();
-    u.starts_with("http://") || u.starts_with("https://")
+    u.starts_with("https://")
 }
 
 fn strip_tags(html: &str) -> String {
@@ -214,20 +217,33 @@ fn extract_html_article(html: &str) -> Option<String> {
     None
 }
 
+fn safe_redirect_policy() -> Policy {
+    Policy::custom(|attempt: Attempt| {
+        if attempt.previous().len() > 5 {
+            return attempt.stop();
+        }
+        if validate_public_http_url(attempt.url().as_str()).is_err() {
+            return attempt.stop();
+        }
+        attempt.follow()
+    })
+}
+
 #[tauri::command]
 pub async fn fetch_page_meta(url: String) -> Result<PageMeta, String> {
     let url = url.trim().to_string();
     if !looks_like_url(&url) {
-        return Err("URL invalide (http/https requis).".into());
+        return Err("URL invalide (https requis).".into());
     }
     if url.len() > 2000 {
         return Err("URL trop longue.".into());
     }
+    validate_public_http_url(&url)?;
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(18))
-        .redirect(reqwest::redirect::Policy::limited(5))
-        .user_agent("CyberScribeNote/0.3 (+local note assistant)")
+        .redirect(safe_redirect_policy())
+        .user_agent("CyberScribeNote/0.4 (+local note assistant)")
         .build()
         .map_err(|e| e.to_string())?;
 

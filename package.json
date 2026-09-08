@@ -1,6 +1,6 @@
 {
   "name": "cyberscribe-note",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Prise de notes locale offline-first avec IA (Ollama) et voix",
   "type": "module",
   "scripts": {
@@ -30,6 +30,7 @@
     "@tiptap/pm": "^3.31.0",
     "@tiptap/starter-kit": "^3.31.0",
     "gray-matter": "^4.0.3",
+    "isomorphic-dompurify": "^3.19.0",
     "marked": "^15.0.6",
     "turndown": "^7.2.4"
   },

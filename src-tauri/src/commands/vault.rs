@@ -1,7 +1,12 @@
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use crate::fs_util::atomic_write;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use tauri::Manager;
+
+const MAX_IMPORT_IMAGE_BYTES: usize = 15 * 1024 * 1024;
+const MAX_IMPORT_TEXT_BYTES: usize = 5 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -91,6 +96,14 @@ fn ensure_vault() -> Result<PathBuf, String> {
     Ok(root)
 }
 
+/// Autorise le vault courant dans le protocole asset (vault custom hors Documents).
+pub fn register_vault_asset_scope(app: &tauri::AppHandle) -> Result<(), String> {
+    let root = ensure_vault()?;
+    app.asset_protocol_scope()
+        .allow_directory(&root, true)
+        .map_err(|e| format!("Impossible d'autoriser le vault dans le protocole asset : {e}"))
+}
+
 fn is_hidden_media_dir(name: &str, path: &Path, parent: &Path, root: &Path) -> bool {
     if name == ".history" {
         return true;
@@ -101,7 +114,60 @@ fn is_hidden_media_dir(name: &str, path: &Path, parent: &Path, root: &Path) -> b
     path.is_dir() && parent == root && (name == "assets" || name == "media")
 }
 
-const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp"];
+const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp"];
+
+fn require_md_extension(relative: &str) -> Result<(), String> {
+    let norm = relative.replace('\\', "/");
+    if !norm.to_lowercase().ends_with(".md") {
+        return Err("Seuls les fichiers .md sont autorisés.".into());
+    }
+    Ok(())
+}
+
+fn validate_image_magic(bytes: &[u8], ext: &str) -> Result<(), String> {
+    let ok = match ext {
+        "png" => {
+            bytes.len() >= 8
+                && bytes[0..8] == [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
+        }
+        "jpg" | "jpeg" => bytes.len() >= 3 && bytes[0..3] == [0xFF, 0xD8, 0xFF],
+        "gif" => {
+            bytes.len() >= 6 && (&bytes[0..6] == b"GIF87a" || &bytes[0..6] == b"GIF89a")
+        }
+        "webp" => {
+            bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP"
+        }
+        "bmp" => bytes.len() >= 2 && &bytes[0..2] == b"BM",
+        _ => false,
+    };
+    if ok {
+        Ok(())
+    } else {
+        Err("Contenu d'image invalide (signature fichier)".into())
+    }
+}
+
+fn validate_export_destination(destination: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(destination.trim());
+    if !path.is_absolute() {
+        return Err("La destination d'export doit être un chemin absolu.".into());
+    }
+    if path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("md"))
+        != Some(true)
+    {
+        return Err("L'export doit être un fichier .md.".into());
+    }
+    let parent = path
+        .parent()
+        .ok_or("Destination d'export invalide.")?;
+    if !parent.is_dir() {
+        return Err("Le dossier de destination n'existe pas.".into());
+    }
+    Ok(path)
+}
 
 fn normalize_image_ext(source: &Path, fallback: &str) -> Result<String, String> {
     let ext = source
@@ -166,7 +232,7 @@ fn store_imported_bytes(
     let (dest_dir, rel_prefix) = media_destination(root, note_path, use_global_media)?;
     let filename = unique_image_name(ext);
     let dest = dest_dir.join(&filename);
-    fs::write(&dest, bytes).map_err(|e| e.to_string())?;
+    atomic_write(&dest, bytes)?;
 
     if rel_prefix == "_media" {
         Ok(format!("_media/{filename}"))
@@ -236,8 +302,9 @@ fn sanitize_name(name: &str) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn init_vault() -> Result<String, String> {
+pub fn init_vault(app: tauri::AppHandle) -> Result<String, String> {
     let root = ensure_vault()?;
+    register_vault_asset_scope(&app)?;
     Ok(root.to_string_lossy().to_string())
 }
 
@@ -253,7 +320,7 @@ pub fn default_vault_path() -> Result<String, String> {
 
 /// Change le dossier vault (absolu). Crée le dossier s'il n'existe pas.
 #[tauri::command]
-pub fn set_vault_path(path: Option<String>) -> Result<String, String> {
+pub fn set_vault_path(app: tauri::AppHandle, path: Option<String>) -> Result<String, String> {
     let mut cfg = crate::commands::config::load_config();
     match path {
         None => {
@@ -279,6 +346,7 @@ pub fn set_vault_path(path: Option<String>) -> Result<String, String> {
     }
     crate::commands::config::save_app_config(cfg)?;
     let root = ensure_vault()?;
+    register_vault_asset_scope(&app)?;
     Ok(root.to_string_lossy().to_string())
 }
 
@@ -290,6 +358,7 @@ pub fn list_vault() -> Result<Vec<VaultEntry>, String> {
 
 #[tauri::command]
 pub fn read_note(relative_path: String) -> Result<String, String> {
+    require_md_extension(&relative_path)?;
     let path = resolve_path(&relative_path)?;
     if !path.is_file() {
         return Err("Ce n'est pas un fichier".into());
@@ -299,6 +368,7 @@ pub fn read_note(relative_path: String) -> Result<String, String> {
 
 #[tauri::command]
 pub fn write_note(relative_path: String, content: String) -> Result<(), String> {
+    require_md_extension(&relative_path)?;
     let root = ensure_vault()?;
     let path = resolve_path(&relative_path)?;
     if let Some(parent) = path.parent() {
@@ -314,7 +384,7 @@ pub fn write_note(relative_path: String, content: String) -> Result<(), String> 
         }
     }
 
-    fs::write(&path, content).map_err(|e| e.to_string())
+    atomic_write(&path, content.as_bytes())
 }
 
 fn history_key(relative: &str) -> String {
@@ -339,7 +409,7 @@ fn push_note_snapshot(
         chrono::Local::now().timestamp_subsec_millis() % 1000
     );
     let file = dir.join(format!("{stamp}.md"));
-    fs::write(&file, content).map_err(|e| e.to_string())?;
+    atomic_write(&file, content.as_bytes())?;
 
     let max = max_versions.max(1) as usize;
     let mut versions: Vec<_> = fs::read_dir(&dir)
@@ -430,6 +500,7 @@ pub fn read_note_version(relative_path: String, version_id: String) -> Result<St
 
 #[tauri::command]
 pub fn restore_note_version(relative_path: String, version_id: String) -> Result<String, String> {
+    require_md_extension(&relative_path)?;
     let root = ensure_vault()?;
     let cfg = crate::commands::config::load_config();
     let version = read_note_version(relative_path.clone(), version_id)?;
@@ -442,7 +513,7 @@ pub fn restore_note_version(relative_path: String, version_id: String) -> Result
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    fs::write(&path, &version).map_err(|e| e.to_string())?;
+    atomic_write(&path, version.as_bytes())?;
     Ok(version)
 }
 
@@ -501,7 +572,7 @@ pub fn sync_txt_notes() -> Result<Vec<String>, String> {
         }
         let body = fs::read_to_string(&txt).map_err(|e| e.to_string())?;
         let content = txt_body_to_markdown(&stem, &body);
-        fs::write(&md, content).map_err(|e| e.to_string())?;
+        atomic_write(&md, content.as_bytes())?;
         let relative = md
             .strip_prefix(&root)
             .map_err(|e| e.to_string())?
@@ -546,7 +617,7 @@ pub fn create_note(parent_path: String, name: String) -> Result<String, String> 
         safe_name.trim_end_matches(".md")
     );
 
-    fs::write(&path, content).map_err(|e| e.to_string())?;
+    atomic_write(&path, content.as_bytes())?;
     Ok(relative)
 }
 
@@ -594,6 +665,9 @@ pub fn import_text_files(paths: Vec<String>, parent_path: String) -> Result<Vec<
         }
 
         let body = fs::read_to_string(&source).map_err(|e| e.to_string())?;
+        if body.len() > MAX_IMPORT_TEXT_BYTES {
+            continue;
+        }
         let body = body.replace("\r\n", "\n").replace('\r', "\n");
         let title = safe.replace('_', " ");
         let content = if body.trim_start().starts_with("---") {
@@ -605,7 +679,7 @@ pub fn import_text_files(paths: Vec<String>, parent_path: String) -> Result<Vec<
             )
         };
 
-        fs::write(&dest, content).map_err(|e| e.to_string())?;
+        atomic_write(&dest, content.as_bytes())?;
         let relative = dest
             .strip_prefix(&root)
             .map_err(|e| e.to_string())?
@@ -736,8 +810,10 @@ pub fn move_vault_item(relative_path: String, destination_parent: String) -> Res
 
 #[tauri::command]
 pub fn export_note(relative_path: String, destination: String) -> Result<(), String> {
+    require_md_extension(&relative_path)?;
     let source = resolve_path(&relative_path)?;
-    fs::copy(&source, &destination).map_err(|e| e.to_string())?;
+    let dest = validate_export_destination(&destination)?;
+    fs::copy(&source, &dest).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -748,13 +824,20 @@ pub fn import_image(
     use_global_media: Option<bool>,
 ) -> Result<String, String> {
     let root = ensure_vault()?;
-    let source = PathBuf::from(&source_path);
+    let source = PathBuf::from(source_path.trim());
+    if !source.is_absolute() {
+        return Err("Le chemin source doit être absolu.".into());
+    }
     if !source.is_file() {
         return Err("Fichier source introuvable".into());
     }
 
     let ext = normalize_image_ext(&source, "png")?;
     let bytes = fs::read(&source).map_err(|e| e.to_string())?;
+    if bytes.len() > MAX_IMPORT_IMAGE_BYTES {
+        return Err("Image trop volumineuse (max 15 Mo).".into());
+    }
+    validate_image_magic(&bytes, &ext)?;
     store_imported_bytes(
         &root,
         &bytes,
@@ -778,6 +861,9 @@ pub fn import_image_bytes(
     if bytes.is_empty() {
         return Err("Image vide".into());
     }
+    if bytes.len() > MAX_IMPORT_IMAGE_BYTES {
+        return Err("Image trop volumineuse (max 15 Mo).".into());
+    }
 
     let ext = extension
         .map(|e| e.trim().trim_start_matches('.').to_lowercase())
@@ -787,6 +873,7 @@ pub fn import_image_bytes(
     if !IMAGE_EXTENSIONS.contains(&ext.as_str()) {
         return Err("Format d'image non supporté".into());
     }
+    validate_image_magic(&bytes, &ext)?;
 
     store_imported_bytes(
         &root,
@@ -904,5 +991,18 @@ mod tests {
         assert!(!is_safe_vault_relative(r"..\windows\system32"));
         assert!(!is_safe_vault_relative(r"C:\Windows\notepad.exe"));
         assert!(!is_safe_vault_relative("/etc/passwd"));
+    }
+
+    #[test]
+    fn rejects_non_md_for_read_write() {
+        assert!(super::require_md_extension("note.txt").is_err());
+        assert!(super::require_md_extension("note.md").is_ok());
+    }
+
+    #[test]
+    fn validates_png_magic_bytes() {
+        let png = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00];
+        assert!(super::validate_image_magic(&png, "png").is_ok());
+        assert!(super::validate_image_magic(&[0x00, 0x01], "png").is_err());
     }
 }
