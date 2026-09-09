@@ -36,3 +36,8 @@ export function countNotesInFolder(entry: VaultEntry): number {
   }
   return n;
 }
+
+/** Dossier sans enfants listés (notes ni sous-dossiers). */
+export function isFolderEmpty(entry: VaultEntry): boolean {
+  return entry.isDir && !(entry.children?.length);
+}

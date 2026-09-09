@@ -45,7 +45,7 @@ export interface AppConfig {
   maxRecordSeconds: number;
   /** Chemin absolu du vault ; null/undefined = défaut Documents/CyberScribeNote/vault */
   vaultPath?: string | null;
-  /** Convertir auto les .txt du vault en .md (copie). */
+  /** Convertir auto les .txt du vault en .md puis supprimer le .txt source. */
   txtSyncEnabled?: boolean;
   /** Snapshots à chaque sauvegarde. */
   noteHistoryEnabled?: boolean;

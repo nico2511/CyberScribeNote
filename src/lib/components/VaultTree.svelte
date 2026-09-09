@@ -5,6 +5,7 @@
   import {
     canMoveVaultItem,
     countNotesInFolder,
+    isFolderEmpty,
     type VaultDragPayload,
   } from "$lib/vault/tree";
   import { getActiveVaultDrag, setActiveVaultDrag } from "$lib/vault/activeDrag";
@@ -47,11 +48,12 @@
   let draggedPath = $state<string | null>(null);
 
   function toggle(path: string) {
-    expanded[path] = expanded[path] === false;
+    expanded[path] = !isExpanded(path);
   }
 
+  /** Par défaut replié — meilleure lisibilité quand il y a beaucoup de dossiers. */
   function isExpanded(path: string) {
-    return expanded[path] !== false;
+    return expanded[path] === true;
   }
 
   function dragPayload(entry: VaultEntry): VaultDragPayload {
@@ -169,6 +171,14 @@
                 title="Nouveau dossier"
                 onclick={() => onCreateFolder(entry.path)}
               >📁</button>
+              {#if isFolderEmpty(entry)}
+                <button
+                  type="button"
+                  class="rounded-lg px-1.5 py-0.5 text-xs text-danger hover:bg-danger/20"
+                  title="Supprimer le dossier vide"
+                  onclick={() => onDelete(entry.path)}
+                >✕</button>
+              {/if}
             </div>
           </div>
           {#if isExpanded(entry.path) && entry.children}

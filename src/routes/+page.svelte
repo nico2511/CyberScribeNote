@@ -11,6 +11,7 @@
   import AiCompanionPanel from "$lib/components/AiCompanionPanel.svelte";
   import ScribeBuddy from "$lib/components/ScribeBuddy.svelte";
   import WelcomeSplash from "$lib/components/WelcomeSplash.svelte";
+  import SetupWizard from "$lib/components/SetupWizard.svelte";
   import NoteHistoryPanel from "$lib/components/NoteHistoryPanel.svelte";
   import { applyTheme, loadTheme, saveTheme, toggleTheme } from "$lib/stores/theme";
   import type { ParagraphSpan } from "$lib/note/paragraph";
@@ -115,6 +116,7 @@
   let searchOpen = $state(false);
   let settingsOpen = $state(false);
   let splashOpen = $state(false);
+  let setupOpen = $state(false);
   let historyOpen = $state(false);
   let txtSyncEnabled = $state(true);
 
@@ -612,11 +614,11 @@
         if (created.length) {
           notify({
             kind: "info",
-            title: "Sync TXT → MD",
+            title: "TXT → Markdown",
             message:
               created.length === 1
-                ? `Créé : ${created[0]}`
-                : `${created.length} notes créées depuis des .txt`,
+                ? `Converti en .md (source .txt supprimée) : ${created[0]}`
+                : `${created.length} fichiers .txt convertis en .md (sources .txt supprimées)`,
             key: "txt-sync",
           });
         }
@@ -887,21 +889,35 @@
   }
 
   async function handleDelete(path: string) {
-    if (
-      !confirm(
-        `Supprimer « ${path} » ?\n\nSi un fichier .txt / .text jumeau existe (sync TXT), il sera aussi supprimé pour éviter sa recréation automatique.`,
-      )
+    const isNote = path.toLowerCase().endsWith(".md");
+    const label = path.split("/").pop() ?? path;
+    if (isNote) {
+      if (
+        !confirm(
+          `Supprimer « ${label} » ?\n\nSi un fichier .txt / .text jumeau existe encore, il sera aussi supprimé.`,
+        )
+      ) {
+        return;
+      }
+    } else if (
+      !confirm(`Supprimer le dossier vide « ${label} » ?`)
     ) {
       return;
     }
-    await invoke("delete_item", { relativePath: path });
-    if (noteSession.selectedPath === path) {
-      noteSession.selectedPath = null;
-      noteSession.content = "";
-      noteSession.savedContent = "";
-      noteSession.dirty = false;
+    try {
+      await invoke("delete_item", { relativePath: path });
+      if (noteSession.selectedPath === path) {
+        noteSession.selectedPath = null;
+        noteSession.content = "";
+        noteSession.savedContent = "";
+        noteSession.dirty = false;
+      }
+      await refreshVault();
+      statusMessage = isNote ? `Note « ${label} » supprimée` : `Dossier « ${label} » supprimé`;
+    } catch (e) {
+      statusMessage = String(e);
+      notify({ kind: "error", title: "Suppression impossible", message: String(e), key: "vault-delete" });
     }
-    await refreshVault();
   }
 
   async function handleRename(path: string) {
@@ -1833,6 +1849,12 @@
     });
     if (!picked) return;
     const paths = Array.isArray(picked) ? picked : [picked];
+    const ok = confirm(
+      "Les fichiers sélectionnés seront importés comme notes Markdown (.md) dans le vault.\n\n" +
+        "Les fichiers .txt déjà présents dans le vault sont convertis en .md puis le .txt source est supprimé automatiquement (Sync TXT).\n\n" +
+        "Les fichiers externes choisis ici restent intacts hors du vault — seule une copie .md est créée.\n\nContinuer ?",
+    );
+    if (!ok) return;
     try {
       const created = await invoke<string[]>("import_text_files", {
         paths,
@@ -1841,10 +1863,10 @@
       await refreshVault();
       const msg =
         created.length === 1
-          ? `Importé : ${created[0]}`
-          : `${created.length} notes importées (.md)`;
+          ? `Importé en Markdown : ${created[0]}`
+          : `${created.length} notes importées en .md`;
       statusMessage = msg;
-      notify({ kind: "success", title: "Import", message: msg, key: "import-txt" });
+      notify({ kind: "success", title: "Import TXT → MD", message: msg, key: "import-txt" });
       if (created[0]) await loadNote(created[0]);
     } catch (e) {
       statusMessage = String(e);
@@ -2013,11 +2035,20 @@
       }),
     );
 
-    // Splash premier lancement (pas de note Bienvenue forcée)
+    // Premier lancement : check-up Ollama. Les utilisateurs existants (splash déjà
+    // dismissé) ne sont pas ré-interrogés.
     try {
-      splashOpen = localStorage.getItem("csn-splash-dismissed") !== "1";
+      const setupDone = localStorage.getItem("csn-setup-done") === "1";
+      const splashDismissed = localStorage.getItem("csn-splash-dismissed") === "1";
+      if (!setupDone && !splashDismissed) {
+        setupOpen = true;
+        splashOpen = false;
+      } else {
+        if (!setupDone) localStorage.setItem("csn-setup-done", "1");
+        splashOpen = !splashDismissed;
+      }
     } catch {
-      splashOpen = true;
+      setupOpen = true;
     }
   });
 
@@ -2270,8 +2301,22 @@
   />
 {/if}
 
+<SetupWizard
+  open={setupOpen}
+  onOllamaUpdated={(s) => (ollamaStatus = s)}
+  onComplete={() => {
+    setupOpen = false;
+    try {
+      localStorage.setItem("csn-setup-done", "1");
+      localStorage.setItem("csn-splash-dismissed", "1");
+    } catch {
+      /* ignore */
+    }
+  }}
+/>
+
 <WelcomeSplash
-  open={splashOpen}
+  open={splashOpen && !setupOpen}
   onDismiss={(dontShowAgain) => {
     splashOpen = false;
     if (dontShowAgain) {

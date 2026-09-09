@@ -662,7 +662,8 @@ fn txt_body_to_markdown(stem: &str, body: &str) -> String {
     )
 }
 
-/// Parcourt le vault : chaque .txt sans .md jumeau → crée la copie .md (conserve le .txt).
+/// Parcourt le vault : chaque .txt/.text → note .md, puis suppression du .txt source.
+/// Si un .md jumeau existe déjà, le .txt orphelin est tout de même retiré.
 #[tauri::command]
 pub fn sync_txt_notes() -> Result<Vec<String>, String> {
     let root = ensure_vault()?;
@@ -675,18 +676,19 @@ pub fn sync_txt_notes() -> Result<Vec<String>, String> {
             continue;
         };
         let md = txt.with_extension("md");
-        if md.exists() {
-            continue;
+        if !md.exists() {
+            let body = fs::read_to_string(&txt).map_err(|e| e.to_string())?;
+            let content = txt_body_to_markdown(&stem, &body);
+            atomic_write(&md, content.as_bytes())?;
+            let relative = md
+                .strip_prefix(&root)
+                .map_err(|e| e.to_string())?
+                .to_string_lossy()
+                .replace('\\', "/");
+            created.push(relative);
         }
-        let body = fs::read_to_string(&txt).map_err(|e| e.to_string())?;
-        let content = txt_body_to_markdown(&stem, &body);
-        atomic_write(&md, content.as_bytes())?;
-        let relative = md
-            .strip_prefix(&root)
-            .map_err(|e| e.to_string())?
-            .to_string_lossy()
-            .replace('\\', "/");
-        created.push(relative);
+        // Toujours supprimer le .txt après conversion (ou s'il restait un orphelin).
+        let _ = fs::remove_file(&txt);
     }
     Ok(created)
 }
@@ -831,7 +833,14 @@ pub fn create_folder(parent_path: String, name: String) -> Result<String, String
 pub fn delete_item(relative_path: String) -> Result<(), String> {
     let path = resolve_path(&relative_path)?;
     if path.is_dir() {
-        return fs::remove_dir_all(&path).map_err(|e| e.to_string());
+        // Uniquement dossiers vides (pas de sous-éléments).
+        let mut entries = fs::read_dir(&path).map_err(|e| e.to_string())?;
+        if entries.next().is_some() {
+            return Err(
+                "Le dossier n'est pas vide — déplacez ou supprimez son contenu d'abord.".into(),
+            );
+        }
+        return fs::remove_dir(&path).map_err(|e| e.to_string());
     }
 
     // Si on supprime un .md issu du sync TXT, retirer aussi le jumeau .txt/.text
@@ -907,7 +916,35 @@ pub fn move_vault_item(relative_path: String, destination_parent: String) -> Res
         ));
     }
 
+    let was_file = source.is_file();
+    let was_dir = source.is_dir();
+    let is_md = was_file
+        && source
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("md"))
+            .unwrap_or(false);
+
+    // Déplacer les jumeaux .txt/.text AVANT le rename du .md (chemins source encore valides).
+    let mut pending_siblings: Vec<(PathBuf, PathBuf)> = Vec::new();
+    if is_md {
+        for ext in ["txt", "text"] {
+            let sibling = source.with_extension(ext);
+            if sibling.is_file() {
+                pending_siblings.push((sibling, dest.with_extension(ext)));
+            }
+        }
+    }
+
     fs::rename(&source, &dest).map_err(|e| format!("Déplacement impossible : {e}"))?;
+
+    for (from, to) in pending_siblings {
+        if to.exists() {
+            let _ = fs::remove_file(&from);
+        } else {
+            let _ = fs::rename(&from, &to);
+        }
+    }
 
     let new_relative = dest
         .strip_prefix(&root)
@@ -915,16 +952,9 @@ pub fn move_vault_item(relative_path: String, destination_parent: String) -> Res
         .to_string_lossy()
         .replace('\\', "/");
 
-    if source.is_file() {
-        let is_md = source
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.eq_ignore_ascii_case("md"))
-            .unwrap_or(false);
-        if is_md {
-            migrate_note_history(&root, &relative_path, &new_relative)?;
-        }
-    } else if source.is_dir() {
+    if was_file && is_md {
+        migrate_note_history(&root, &relative_path, &new_relative)?;
+    } else if was_dir {
         migrate_folder_histories(&root, &relative_path, &new_relative)?;
     }
 

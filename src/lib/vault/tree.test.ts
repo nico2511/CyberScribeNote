@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canMoveVaultItem, countNotesInFolder, parentPath } from "./tree";
+import { canMoveVaultItem, countNotesInFolder, isFolderEmpty, parentPath } from "./tree";
 
 describe("canMoveVaultItem", () => {
   it("blocks same-folder moves", () => {
@@ -42,5 +42,23 @@ describe("countNotesInFolder", () => {
         ],
       }),
     ).toBe(3);
+  });
+});
+
+describe("isFolderEmpty", () => {
+  it("is true when folder has no children", () => {
+    expect(isFolderEmpty({ name: "Empty", path: "Empty", isDir: true, children: [] })).toBe(true);
+    expect(isFolderEmpty({ name: "Empty", path: "Empty", isDir: true })).toBe(true);
+  });
+
+  it("is false when folder has notes or subfolders", () => {
+    expect(
+      isFolderEmpty({
+        name: "A",
+        path: "A",
+        isDir: true,
+        children: [{ name: "n.md", path: "A/n.md", isDir: false }],
+      }),
+    ).toBe(false);
   });
 });

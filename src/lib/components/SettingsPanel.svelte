@@ -582,11 +582,11 @@
               }}
             />
             <span>
-              <span class="font-medium">Sync TXT → MD</span>
+              <span class="font-medium">Conversion TXT → MD</span>
               <span class="block text-text-muted">
-                À chaque actualisation du vault, crée une copie .md pour chaque .txt sans jumeau
-                (Nextcloud, etc.). Le .txt n'est pas modifié à la création ; le supprimer avec la
-                note .md évite la boucle de recréation.
+                À chaque actualisation du vault, chaque .txt/.text est converti en note .md
+                puis le fichier .txt source est <strong>supprimé</strong> (le vault reste en
+                Markdown uniquement). Désactivez si vous devez conserver les .txt originaux.
               </span>
             </span>
           </label>
@@ -636,9 +636,9 @@
                 const created = await invoke<string[]>("sync_txt_notes");
                 message =
                   created.length === 0
-                    ? "Aucun nouveau .txt à convertir."
-                    : `${created.length} note(s) créée(s) depuis .txt`;
-                notify({ kind: "success", title: "Sync TXT", message, key: "txt-sync" });
+                    ? "Aucun .txt à convertir (ou déjà convertis)."
+                    : `${created.length} note(s) .md créée(s) — sources .txt supprimées`;
+                notify({ kind: "success", title: "TXT → MD", message, key: "txt-sync" });
                 onVaultChanged?.(currentVault);
               } catch (e) {
                 error = String(e);
@@ -647,7 +647,7 @@
               }
             }}
           >
-            Synchroniser les .txt maintenant
+            Convertir les .txt maintenant (supprime les sources)
           </button>
         </section>
 
