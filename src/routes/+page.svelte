@@ -62,10 +62,39 @@
     type BuddyTip,
     type BuddyAction,
   } from "$lib/ai/scribeBuddy";
-  import { noteBody, parseNoteContext, setNoteContext, ensureVisibleContextBlock, touchUpdatedDate, setFrontmatterTags } from "$lib/note/frontmatter";
+  import { noteBody, parseNoteContext, setNoteContext, setFrontmatterTags } from "$lib/note/frontmatter";
   import { mergeBodyMarkdown } from "$lib/markdown/bridge";
   import PixelIcon from "$lib/components/PixelIcon.svelte";
   import { dismissToast, notify } from "$lib/stores/notifications";
+  import {
+    noteSession,
+    loadNote as loadNoteFromStore,
+    persistNote,
+    scheduleNoteAutoSave,
+    noteContentChange,
+    resetNoteSession,
+  } from "$lib/stores/noteSession.svelte";
+  import {
+    voiceSession,
+    refreshVoice,
+    handleVoiceToggle as handleVoiceToggleStore,
+    appendTranscript as appendTranscriptStore,
+    enqueueVoiceTranscript,
+    getVoiceLoadingToastId,
+    setVoiceLoadingToastId,
+    isVoiceBusy,
+  } from "$lib/stores/voiceSession.svelte";
+  import {
+    aiQueue,
+    silenceAiHelpers as markAiQuiet,
+    isAiQuiet,
+    pushSuggestion,
+    dismissSuggestion,
+    clearSuggestionsForNote,
+    editorHighlightFromSuggestions,
+    stillCurrentAiRequest,
+    resetAiQueue,
+  } from "$lib/stores/aiQueue.svelte";
   import type {
     AiAction,
     OllamaStatus,
@@ -73,7 +102,6 @@
     SearchResult,
     ThemeMode,
     VaultEntry,
-    VoiceStatus,
     VoiceTranscript,
     AiSuggestion,
     ProactiveSuggestionResponse,
@@ -81,11 +109,6 @@
 
   let entries = $state<VaultEntry[]>([]);
   let vaultPath = $state("");
-  let selectedPath = $state<string | null>(null);
-  let content = $state("");
-  let savedContent = $state("");
-  let dirty = $state(false);
-  let saving = $state(false);
   let theme = $state<ThemeMode>("light");
   let searchOpen = $state(false);
   let settingsOpen = $state(false);
@@ -94,8 +117,7 @@
   let txtSyncEnabled = $state(true);
 
   $effect(() => {
-    // Close history when switching notes
-    selectedPath;
+    noteSession.selectedPath;
     historyOpen = false;
   });
 
@@ -110,9 +132,6 @@
     networkMode: "local",
     isLocalhost: true,
   });
-  let aiLoading = $state(false);
-  let companionOpen = $state(false);
-  let aiSuggestions = $state<AiSuggestion[]>([]);
   let proactiveEnabled = $state(false);
   let autoTypoFixEnabled = $state(true);
   let autoSummarizeEnabled = $state(false);
@@ -125,159 +144,87 @@
   let buddyScanTimer: ReturnType<typeof setTimeout> | null = null;
   let buddyRelatedTimer: ReturnType<typeof setTimeout> | null = null;
   let customPromptFocused = $state(false);
-  let pendingPromptDictation = $state<{ text: string; id: number } | null>(null);
-  let proactiveLoading = $state(false);
   let editorCursor = $state<number | null>(null);
   let editorSelection = $state<TextSelection | null>(null);
   /** Dernière position curseur connue (pour insérer la dictée au bon endroit). */
   let lastCaretOffset = 0;
   let pendingImageMarkdown = $state<string | null>(null);
-  let pendingDictation = $state<{ text: string; id: number } | null>(null);
   let autoTypoNoticeTimer: ReturnType<typeof setTimeout> | null = null;
   let autoTypoFixBusy = false;
   let proactiveStatus = $state("");
   let statusMessage = $state("");
   let autoSummaryTimer: ReturnType<typeof setTimeout> | null = null;
   let lastAutoSummaryKey = "";
-  let voiceStatus = $state<VoiceStatus>({
-    running: false,
-    recording: false,
-    transcribing: false,
-    modelLoaded: false,
-    modelLoading: false,
-    depsOk: false,
-    hotkey: "F8",
-  });
 
   let unlisteners: UnlistenFn[] = [];
 
-  let saveTimer: ReturnType<typeof setTimeout> | null = null;
   let searchTimer: ReturnType<typeof setTimeout> | null = null;
 
   let title = $derived.by(() => {
-    if (!selectedPath) return "Aucune note sélectionnée";
-    const name = selectedPath.split("/").pop() ?? selectedPath;
+    if (!noteSession.selectedPath) return "Aucune note sélectionnée";
+    const name = noteSession.selectedPath.split("/").pop() ?? noteSession.selectedPath;
     return name.replace(/\.md$/, "");
   });
 
   let activeModel = $derived(ollamaStatus.selectedModel || ollamaStatus.models[0] || "llama3.2");
-  let noteContext = $derived(parseNoteContext(content));
+  let noteContext = $derived(parseNoteContext(noteSession.content));
   let customPromptTargetLabel = $derived.by(() =>
     editorSelection
       ? `sélection (${editorSelection.text.length} car.)`
       : "note entière",
   );
-  let editorHighlight = $derived.by(() => {
-    const latest = aiSuggestions.find((s) => s.selection);
-    if (!latest?.selection) return null;
-    return { start: latest.selection.start, end: latest.selection.end };
-  });
+  let editorHighlight = $derived(editorHighlightFromSuggestions());
 
   let lastProactiveAt = 0;
   let lastProactiveKey = "";
-  let voiceTranscriptChain: Promise<void> = Promise.resolve();
-  let voiceLoadingToastId: string | null = null;
   let voiceCrashRestarts = 0;
   let voiceCrashWindowStart = 0;
   let noteScanTimer: ReturnType<typeof setTimeout> | null = null;
   let fullTypoScanTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Invalide les réponses IA en cours quand on change de note. */
-  let aiEpoch = 0;
-  let noteOpenedAt = 0;
-  /** Après une action IA manuelle (traduction…), ne pas relancer typo/proactif. */
-  let aiQuietUntil = 0;
 
   function silenceAiHelpers(ms = 90000) {
-    aiQuietUntil = Date.now() + ms;
-    // N'annule que les scans « suggestions » — la correction de fautes reste active
+    markAiQuiet(ms);
     if (noteScanTimer) {
       clearTimeout(noteScanTimer);
       noteScanTimer = null;
     }
   }
 
-  function isAiQuiet() {
-    return Date.now() < aiQuietUntil;
-  }
-
-  async function refreshVoice() {
-    voiceStatus = await invoke<VoiceStatus>("voice_get_status");
-  }
-
   async function handleVoiceToggle() {
-    if (voiceStatus.transcribing) {
-      const msg = "Transcription en cours — patientez quelques secondes.";
+    await handleVoiceToggleStore((msg) => {
       statusMessage = msg;
-      notify({ kind: "info", title: "Transcription en cours", message: msg });
-      return;
-    }
-    await refreshVoice();
-    if (voiceStatus.modelLoading) {
-      const msg = "Chargement du modèle Whisper en cours — patientez avant de dicter.";
-      statusMessage = msg;
-      notify({ kind: "warning", title: "Modèle en chargement", message: msg });
-      return;
-    }
-    if (voiceStatus.running && !voiceStatus.modelLoaded) {
-      const msg = "Modèle Whisper non chargé — Réglages → Voix → « Appliquer la config voix ».";
-      statusMessage = msg;
-      notify({ kind: "warning", title: "Dictée indisponible", message: msg });
-      return;
-    }
-    if (voiceStatus.error) {
-      // Erreurs non bloquantes (timeout d'enregistrement, etc.) : on laisse retenter
-      const soft =
-        voiceStatus.error.includes("automatiquement") ||
-        voiceStatus.error.includes("Transcription encore");
-      if (!soft) {
-        statusMessage = `Voix : ${voiceStatus.error}`;
-        notify({ kind: "error", title: "Erreur vocale", message: voiceStatus.error });
-        return;
-      }
-    }
-    try {
-      await invoke("voice_toggle");
-      await refreshVoice();
-    } catch (e) {
-      const msg = String(e);
-      statusMessage = msg;
-      notify({
-        kind: msg.includes("chargement") || msg.includes("redémarré") ? "warning" : "error",
-        title: "Dictée",
-        message: msg,
-        key: "voice-toggle",
-      });
-      await refreshVoice();
-    }
+    });
   }
 
   $effect(() => {
-    if (voiceStatus.modelLoading && !voiceLoadingToastId) {
-      voiceLoadingToastId = notify({
-        kind: "info",
-        title: "Chargement du modèle Whisper…",
-        message: "La dictée sera disponible une fois le chargement terminé.",
-        durationMs: 0,
-        key: "voice-loading",
-      });
+    if (voiceSession.status.modelLoading && !getVoiceLoadingToastId()) {
+      setVoiceLoadingToastId(
+        notify({
+          kind: "info",
+          title: "Chargement du modèle Whisper…",
+          message: "La dictée sera disponible une fois le chargement terminé.",
+          durationMs: 0,
+          key: "voice-loading",
+        }),
+      );
       return;
     }
-    if (!voiceStatus.modelLoading && voiceLoadingToastId) {
-      dismissToast(voiceLoadingToastId);
-      voiceLoadingToastId = null;
-      if (voiceStatus.modelLoaded && voiceStatus.running) {
+    if (!voiceSession.status.modelLoading && getVoiceLoadingToastId()) {
+      dismissToast(getVoiceLoadingToastId()!);
+      setVoiceLoadingToastId(null);
+      if (voiceSession.status.modelLoaded && voiceSession.status.running) {
         notify({
           kind: "success",
           title: "Dictée prête",
-          message: `Appuyez sur ${voiceStatus.hotkey} pour parler, rappuyez pour transcrire.`,
+          message: `Appuyez sur ${voiceSession.status.hotkey} pour parler, rappuyez pour transcrire.`,
           key: "voice-ready",
         });
-      } else if (voiceStatus.running && !voiceStatus.modelLoaded) {
+      } else if (voiceSession.status.running && !voiceSession.status.modelLoaded) {
         notify({
           kind: "warning",
           title: "Modèle Whisper non chargé",
           message:
-            voiceStatus.error ??
+            voiceSession.status.error ??
             "Réglages → Voix → « Appliquer la config voix », puis réessayez.",
           key: "voice-not-loaded",
         });
@@ -288,7 +235,7 @@
   async function tryAiAutoTypoFix(span: ParagraphSpan, baseContent?: string): Promise<boolean> {
     if (autoTypoFixBusy || !autoTypoFixEnabled) return false;
 
-    const body = baseContent ?? content;
+    const body = baseContent ?? noteSession.content;
     const lineText = body.slice(span.start, span.end);
     if (!lineNeedsAiTypoFix(lineText)) return false;
 
@@ -338,10 +285,10 @@
   }
 
   async function runAiTypoFixPass(baseContent?: string) {
-    if (!autoTypoFixEnabled || !selectedPath) return;
+    if (!autoTypoFixEnabled || !noteSession.selectedPath) return;
 
     for (let attempt = 0; attempt < 5; attempt++) {
-      const body = baseContent ?? content;
+      const body = baseContent ?? noteSession.content;
       const lines = scanBodyTypoLines(body).filter((line) => {
         const text = body.slice(line.start, line.end);
         return lineNeedsAiTypoFix(text);
@@ -352,7 +299,7 @@
       const text = body.slice(line.start, line.end);
       const applied = await tryAiAutoTypoFix({ ...line, text }, body);
       if (!applied) break;
-      baseContent = content;
+      baseContent = noteSession.content;
     }
   }
 
@@ -377,48 +324,48 @@
       editEnd,
       replacementLen,
     );
-    content = next;
+    noteSession.content = next;
     lastCaretOffset = caret;
     editorCursor = caret;
-    dirty = next !== savedContent;
+    noteSession.dirty = next !== noteSession.savedContent;
     scheduleAutoSave();
-    if (selectedPath && dirty) void persistNote(selectedPath, next);
+    if (noteSession.selectedPath && noteSession.dirty) void persistNote(noteSession.selectedPath, next);
     scheduleFullTypoScan(800);
     scheduleNoteScan(8000);
     showAutoTypoNotice(message);
   }
 
   async function handleAutoTypoFix(_span: ParagraphSpan) {
-    if (!autoTypoFixEnabled || voiceStatus.recording || voiceStatus.transcribing) return;
+    if (!autoTypoFixEnabled || voiceSession.status.recording || voiceSession.status.transcribing) return;
     await runBatchAutoTypoFix();
   }
 
   async function runBatchAutoTypoFix() {
-    if (!autoTypoFixEnabled || !selectedPath || autoTypoFixBusy) return;
-    if (voiceStatus.recording || voiceStatus.transcribing) return;
+    if (!autoTypoFixEnabled || !noteSession.selectedPath || autoTypoFixBusy) return;
+    if (voiceSession.status.recording || voiceSession.status.transcribing) return;
     autoTypoFixBusy = true;
 
     try {
-      aiSuggestions = aiSuggestions.filter(
+      aiQueue.aiSuggestions = aiQueue.aiSuggestions.filter(
         (s) => !(s.action === "correct" && s.source === "proactive"),
       );
 
-      const before = content;
+      const before = noteSession.content;
       const caretBefore = lastCaretOffset;
-      const { content: next, count, caret } = autoFixAllTypoLines(content, caretBefore);
-      let working = content;
+      const { content: next, count, caret } = autoFixAllTypoLines(noteSession.content, caretBefore);
+      let working = noteSession.content;
       if (count > 0 && next !== before) {
         working = next;
-        content = next;
+        noteSession.content = next;
         lastCaretOffset = caret;
         editorCursor = caret;
-        dirty = next !== savedContent;
+        noteSession.dirty = next !== noteSession.savedContent;
         scheduleAutoSave();
-        if (selectedPath) await persistNote(selectedPath, next);
+        if (noteSession.selectedPath) await persistNote(noteSession.selectedPath, next);
         showAutoTypoNotice(`✓ ${count} faute${count > 1 ? "s" : ""} corrigée${count > 1 ? "s" : ""} automatiquement`);
       }
       await runAiTypoFixPass(working);
-      proactiveStatus = bodyHasTypoLines(content)
+      proactiveStatus = bodyHasTypoLines(noteSession.content)
         ? "Certaines fautes nécessitent une correction manuelle."
         : count > 0
           ? "Fautes corrigées."
@@ -435,22 +382,16 @@
   }
 
   function appendTranscript(fragment: string) {
-    const raw = fragment.trim();
-    if (!raw) return;
-    // Insertion via TipTap au caret réel (évite le décalage markdown n-1 / avant le point)
-    pendingDictation = { text: raw, id: Date.now() };
+    appendTranscriptStore(fragment, (ms) => silenceAiHelpers(ms));
     if (autoTypoFixEnabled) {
-      silenceAiHelpers(8000);
       setTimeout(() => {
-        if (!voiceStatus.recording && !voiceStatus.transcribing) {
-          void runBatchAutoTypoFix();
-        }
+        if (!isVoiceBusy()) void runBatchAutoTypoFix();
       }, 5000);
     }
   }
 
   async function handleVoiceTranscript(text: string) {
-    voiceTranscriptChain = voiceTranscriptChain.then(async () => {
+    const chain = enqueueVoiceTranscript(async () => {
       if (!text.trim()) {
         const msg =
           "Aucune parole reconnue — phrase trop longue, trop de pauses, ou micro trop bas. Réessayez, ou passez la durée max à 90 s (Réglages → Voix).";
@@ -503,13 +444,13 @@
             : "traduis",
         };
         const phrase = labels[parsed.action] ?? parsed.action;
-        if (!selectedPath) {
+        if (!noteSession.selectedPath) {
           const msg = "Ouvrez une note pour les commandes IA vocales (PTT).";
           statusMessage = msg;
           notify({ kind: "warning", title: "Scribe", message: msg, key: "voice-cmd" });
           return;
         }
-        if (!noteBody(content).trim()) {
+        if (!noteBody(noteSession.content).trim()) {
           const msg = "La note est vide — rien à transformer. Dictez d'abord du texte.";
           statusMessage = msg;
           notify({ kind: "warning", title: "Scribe", message: msg, key: "voice-cmd" });
@@ -540,7 +481,7 @@
       }
 
       if (parsed.kind === "skill") {
-        if (!selectedPath) {
+        if (!noteSession.selectedPath) {
           const msg = "Ouvrez une note pour les commandes de conception (PTT).";
           statusMessage = msg;
           notify({ kind: "warning", title: "Scribe", message: msg, key: "voice-cmd" });
@@ -557,15 +498,15 @@
         return;
       }
 
-      if (!selectedPath) {
+      if (!noteSession.selectedPath) {
         const msg = "Ouvrez une note pour insérer la dictée (PTT).";
         statusMessage = msg;
         notify({ kind: "warning", title: "Note requise", message: msg });
         return;
       }
 
-      if (customPromptFocused && companionOpen) {
-        pendingPromptDictation = { text: parsed.text, id: Date.now() };
+      if (customPromptFocused && aiQueue.companionOpen) {
+        voiceSession.pendingPromptDictation = { text: parsed.text, id: Date.now() };
         const preview = `« ${parsed.text.slice(0, 60)}${parsed.text.length > 60 ? "…" : ""} »`;
         statusMessage = `Dictée → prompt custom : ${preview}`;
         notify({ kind: "success", title: "Dictée (prompt)", message: preview, key: "voice-prompt" });
@@ -577,8 +518,7 @@
       statusMessage = `Dictée insérée : ${preview}`;
       notify({ kind: "success", title: "Dictée insérée", message: preview });
     });
-
-    await voiceTranscriptChain;
+    await chain;
   }
 
   async function openNoteByQuery(query: string) {
@@ -686,78 +626,48 @@
   }
 
   async function loadNote(path: string) {
-    if (selectedPath && selectedPath !== path) {
-      if (dirty) await persistNote(selectedPath, content);
-    }
-    aiEpoch += 1;
-    noteOpenedAt = Date.now();
-    if (autoSummaryTimer) clearTimeout(autoSummaryTimer);
-    if (noteScanTimer) clearTimeout(noteScanTimer);
-    if (fullTypoScanTimer) clearTimeout(fullTypoScanTimer);
-
-    selectedPath = path;
-    const raw = await invoke<string>("read_note", { relativePath: path });
-    content = ensureVisibleContextBlock(raw);
-    savedContent = content;
-    dirty = false;
-    aiSuggestions = [];
-    editorSelection = null;
-    lastProactiveKey = "";
-    lastAutoSummaryKey = "";
-    proactiveStatus = "";
-    companionOpen = true;
-    if (content !== raw) {
-      await persistNote(path, content);
-    }
-    scheduleNoteScan(4000);
-    scheduleAutoSummary(45000);
-    buddyTyping = false;
-    buddyDismissedId = null;
-    buddyHasRelated = false;
-    refreshBuddyTip();
-    scheduleRelatedCheck();
-    if (autoTypoFixEnabled) {
-      queueMicrotask(() => void runBatchAutoTypoFix());
-    }
-  }
-
-  async function persistNote(path: string, body: string) {
-    saving = true;
-    try {
-      const stamped = touchUpdatedDate(body);
-      await invoke("write_note", { relativePath: path, content: stamped });
-      savedContent = stamped;
-      dirty = false;
-      if (selectedPath === path && stamped !== content) {
-        // Frontmatter only → update content without forcing caret remap
-        content = stamped;
-      }
-    } finally {
-      saving = false;
-    }
+    await loadNoteFromStore(path, {
+      onBeforeSwitch: () => {
+        if (autoSummaryTimer) clearTimeout(autoSummaryTimer);
+        if (noteScanTimer) clearTimeout(noteScanTimer);
+        if (fullTypoScanTimer) clearTimeout(fullTypoScanTimer);
+      },
+      onLoaded: () => {
+        clearSuggestionsForNote(null);
+        editorSelection = null;
+        lastProactiveKey = "";
+        lastAutoSummaryKey = "";
+        proactiveStatus = "";
+        aiQueue.companionOpen = true;
+        scheduleNoteScan(4000);
+        scheduleAutoSummary(45000);
+        buddyTyping = false;
+        buddyDismissedId = null;
+        buddyHasRelated = false;
+        refreshBuddyTip();
+        scheduleRelatedCheck();
+        if (autoTypoFixEnabled) queueMicrotask(() => void runBatchAutoTypoFix());
+      },
+    });
   }
 
   function scheduleAutoSave() {
-    if (!selectedPath) return;
-    if (saveTimer) clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
-      if (dirty && selectedPath) persistNote(selectedPath, content);
-    }, 1200);
+    scheduleNoteAutoSave(() => {
+      if (noteSession.selectedPath) void persistNote(noteSession.selectedPath, noteSession.content);
+    });
   }
 
   function scheduleFullTypoScan(delayMs = 1200) {
-    if (!autoTypoFixEnabled || !selectedPath) return;
+    if (!autoTypoFixEnabled || !noteSession.selectedPath) return;
     if (fullTypoScanTimer) clearTimeout(fullTypoScanTimer);
     fullTypoScanTimer = setTimeout(() => {
-      if (voiceStatus.recording || voiceStatus.transcribing) return;
+      if (voiceSession.status.recording || voiceSession.status.transcribing) return;
       void runBatchAutoTypoFix();
     }, delayMs);
   }
 
   function handleContentChange(value: string) {
-    content = value;
-    dirty = value !== savedContent;
-    scheduleAutoSave();
+    noteContentChange(value, () => scheduleAutoSave());
     scheduleFullTypoScan(1200);
     if (!isAiQuiet()) {
       scheduleNoteScan(8000);
@@ -779,18 +689,18 @@
   }
 
   function refreshBuddyTip() {
-    if (!buddyEnabled || !selectedPath) {
+    if (!buddyEnabled || !noteSession.selectedPath) {
       buddyTip = null;
       return;
     }
     if (buddyScanTimer) clearTimeout(buddyScanTimer);
     const run = () => {
       const tip = scanBuddyTip({
-        markdown: noteBody(content),
+        markdown: noteBody(noteSession.content),
         typing: buddyTyping,
-        busy: aiLoading || proactiveLoading,
-        hasSuggestions: aiSuggestions.some((s) => !s.notePath || s.notePath === selectedPath),
-        noteOpen: !!selectedPath,
+        busy: aiQueue.aiLoading || aiQueue.proactiveLoading,
+        hasSuggestions: aiQueue.aiSuggestions.some((s) => !s.notePath || s.notePath === noteSession.selectedPath),
+        noteOpen: !!noteSession.selectedPath,
         hasRelated: buddyHasRelated,
         selectionText: editorSelection?.text,
       });
@@ -804,7 +714,7 @@
       buddyTip = tip;
     };
     // Tips structure après une courte pause ; listen/busy immédiats
-    if (buddyTyping || aiLoading || proactiveLoading) run();
+    if (buddyTyping || aiQueue.aiLoading || aiQueue.proactiveLoading) run();
     else {
       buddyScanTimer = setTimeout(run, 450);
       scheduleRelatedCheck();
@@ -812,18 +722,18 @@
   }
 
   function scheduleRelatedCheck() {
-    if (!buddyEnabled || !selectedPath) return;
-    const body = noteBody(content).trim();
+    if (!buddyEnabled || !noteSession.selectedPath) return;
+    const body = noteBody(noteSession.content).trim();
     if (body.length < 120) {
       buddyHasRelated = false;
       return;
     }
     if (buddyRelatedTimer) clearTimeout(buddyRelatedTimer);
-    const path = selectedPath;
+    const path = noteSession.selectedPath;
     buddyRelatedTimer = setTimeout(async () => {
       try {
         const rag = await fetchRagContext(body.slice(0, 800), path);
-        if (selectedPath !== path) return;
+        if (noteSession.selectedPath !== path) return;
         const next = rag.length > 80;
         if (next !== buddyHasRelated) {
           buddyHasRelated = next;
@@ -837,8 +747,8 @@
 
   let buddyMood = $derived.by((): BuddyMood => {
     if (!buddyEnabled) return "idle";
-    if (buddyTip && !buddyTyping && !(aiLoading || proactiveLoading)) return buddyTip.mood;
-    return moodFromActivity(buddyTyping, aiLoading || proactiveLoading);
+    if (buddyTip && !buddyTyping && !(aiQueue.aiLoading || aiQueue.proactiveLoading)) return buddyTip.mood;
+    return moodFromActivity(buddyTyping, aiQueue.aiLoading || aiQueue.proactiveLoading);
   });
 
   function handleBuddyToggle(enabled: boolean) {
@@ -859,32 +769,32 @@
       return;
     }
     if (action.kind === "open_companion") {
-      companionOpen = true;
+      aiQueue.companionOpen = true;
       return;
     }
     if (action.kind === "skill") {
-      companionOpen = true;
+      aiQueue.companionOpen = true;
       void handleSkill(action.skillId);
     }
   }
 
   function scheduleAutoSummary(delayMs = 40000) {
-    if (!autoSummarizeEnabled || !selectedPath) return;
+    if (!autoSummarizeEnabled || !noteSession.selectedPath) return;
     // Après ouverture, attendre au moins 45 s avant le premier résumé auto
-    const sinceOpen = Date.now() - noteOpenedAt;
+    const sinceOpen = Date.now() - noteSession.noteOpenedAt;
     const wait = Math.max(delayMs, 45000 - sinceOpen);
     if (autoSummaryTimer) clearTimeout(autoSummaryTimer);
     autoSummaryTimer = setTimeout(() => {
-      void maybeAutoSummarize(selectedPath!, content);
+      void maybeAutoSummarize(noteSession.selectedPath!, noteSession.content);
     }, wait);
   }
 
   async function maybeAutoSummarize(path: string, body: string) {
     if (!autoSummarizeEnabled) return;
     // Pas de résumé auto juste après ouverture (évite le spam à chaud)
-    if (Date.now() - noteOpenedAt < 20000) return;
+    if (Date.now() - noteSession.noteOpenedAt < 20000) return;
 
-    const epoch = aiEpoch;
+    const epoch = noteSession.aiEpoch;
     const text = noteBody(body).trim();
     if (text.length < 280) return;
     if (text.split(/\s+/).length < 40) return;
@@ -892,14 +802,14 @@
     const existing = extractExistingSummary(body);
     const key = `${path}:${text.length}:${text.slice(0, 80)}`;
     if (key === lastAutoSummaryKey) return;
-    if (aiLoading || proactiveLoading) return;
+    if (aiQueue.aiLoading || aiQueue.proactiveLoading) return;
 
     if (!ollamaStatus.available) {
       const ok = await ensureOllamaRunning(true);
       if (!ok) return;
     }
 
-    const already = aiSuggestions.some(
+    const already = aiQueue.aiSuggestions.some(
       (s) =>
         s.action === "summarize" &&
         s.source === "proactive" &&
@@ -911,7 +821,7 @@
     try {
       statusMessage = "Résumé automatique en cours…";
       const ragContext = await fetchRagContext(text.slice(0, 800), path);
-      if (epoch !== aiEpoch || selectedPath !== path) return;
+      if (!stillCurrentAiRequest(epoch, path)) return;
 
       const result = await invoke<string>("ollama_summarize_note", {
         content: text,
@@ -919,7 +829,7 @@
         noteContext: parseNoteContext(body).trim() || null,
         ragContext: ragContext || null,
       });
-      if (epoch !== aiEpoch || selectedPath !== path) return;
+      if (!stillCurrentAiRequest(epoch, path)) return;
 
       const proposal = buildAiProposal("summarize", text, result);
       if (!proposal) return;
@@ -930,7 +840,7 @@
       }
 
       lastAutoSummaryKey = key;
-      companionOpen = true;
+      aiQueue.companionOpen = true;
       const suggestion: AiSuggestion = {
         id: crypto.randomUUID(),
         action: "summarize",
@@ -943,10 +853,10 @@
         applyMode: "append",
         reason: "Inactivité d'édition — complément, pas un remplacement",
       };
-      aiSuggestions = [suggestion, ...aiSuggestions.filter((s) => s.notePath === path)].slice(0, 12);
+      aiQueue.aiSuggestions = [suggestion, ...aiQueue.aiSuggestions.filter((s) => s.notePath === path)].slice(0, 12);
       statusMessage = "Résumé prêt (ajout en fin de note) — appliquez ou ignorez.";
     } catch (e) {
-      if (epoch === aiEpoch && selectedPath === path) {
+      if (stillCurrentAiRequest(epoch, path)) {
         statusMessage = `Résumé auto indisponible : ${e}`;
       }
     }
@@ -982,11 +892,11 @@
       return;
     }
     await invoke("delete_item", { relativePath: path });
-    if (selectedPath === path) {
-      selectedPath = null;
-      content = "";
-      savedContent = "";
-      dirty = false;
+    if (noteSession.selectedPath === path) {
+      noteSession.selectedPath = null;
+      noteSession.content = "";
+      noteSession.savedContent = "";
+      noteSession.dirty = false;
     }
     await refreshVault();
   }
@@ -1000,8 +910,8 @@
         relativePath: path,
         newName: name.trim(),
       });
-      if (selectedPath === path) {
-        selectedPath = newPath;
+      if (noteSession.selectedPath === path) {
+        noteSession.selectedPath = newPath;
       }
       await refreshVault();
       statusMessage = `Note renommée : ${name.trim()}`;
@@ -1019,10 +929,10 @@
         destinationParent,
       });
 
-      if (selectedPath === sourcePath) {
-        selectedPath = newPath;
-      } else if (selectedPath?.startsWith(`${sourcePath}/`)) {
-        selectedPath = `${newPath}${selectedPath.slice(sourcePath.length)}`;
+      if (noteSession.selectedPath === sourcePath) {
+        noteSession.selectedPath = newPath;
+      } else if (noteSession.selectedPath?.startsWith(`${sourcePath}/`)) {
+        noteSession.selectedPath = `${newPath}${noteSession.selectedPath.slice(sourcePath.length)}`;
       }
 
       await refreshVault();
@@ -1039,7 +949,7 @@
 
   async function handleAiAction(request: AiActionRequest) {
     const { action, selection: rawSel, translateTo } = request;
-    const located = rawSel ? locateSelectionInContent(content, rawSel) : null;
+    const located = rawSel ? locateSelectionInContent(noteSession.content, rawSel) : null;
     const sel = rawSel && located
       ? { ...rawSel, start: located.start, end: located.end }
       : rawSel && rawSel.text
@@ -1054,7 +964,7 @@
       return;
     }
     const fullNote = !sel;
-    const targetText = sel?.text ?? noteBody(content);
+    const targetText = sel?.text ?? noteBody(noteSession.content);
     if (!targetText.trim()) {
       const msg = "La note est vide — rien à transformer.";
       statusMessage = msg;
@@ -1062,8 +972,8 @@
       return;
     }
 
-    const epoch = aiEpoch;
-    const pathAtStart = selectedPath;
+    const epoch = noteSession.aiEpoch;
+    const pathAtStart = noteSession.selectedPath;
 
     if (!ollamaStatus.available && action !== "correct") {
       const started = await ensureOllamaRunning(true);
@@ -1074,8 +984,8 @@
       }
     }
 
-    aiLoading = true;
-    companionOpen = true;
+    aiQueue.aiLoading = true;
+    aiQueue.companionOpen = true;
     const lang = translateTo ?? "en";
     const labels: Record<AiAction, string> = {
       summarize: "Résumé",
@@ -1092,7 +1002,7 @@
           : "note";
     statusMessage = `${labels[action]} (${scope}) — suggestion en cours…`;
 
-    const stillCurrent = () => epoch === aiEpoch && selectedPath === pathAtStart;
+    const stillCurrent = () => stillCurrentAiRequest(epoch, pathAtStart);
 
     try {
       let result = "";
@@ -1165,7 +1075,7 @@
       }
 
       if (action === "summarize") {
-        if (isDuplicateSummary(extractExistingSummary(content), proposal)) {
+        if (isDuplicateSummary(extractExistingSummary(noteSession.content), proposal)) {
           statusMessage = "Ce résumé est déjà présent dans la note.";
           return;
         }
@@ -1183,16 +1093,16 @@
 
       // Traduction sélection : appliquer tout de suite + silence des helpers auto
       if (!isSummary && action === "translate" && sel) {
-        const range = locateSelectionInContent(content, sel) ?? {
+        const range = locateSelectionInContent(noteSession.content, sel) ?? {
           start: sel.start,
           end: sel.end,
         };
-        const next = replaceTextRange(content, range.start, range.end, proposal);
+        const next = replaceTextRange(noteSession.content, range.start, range.end, proposal);
         silenceAiHelpers(120000);
         handleContentChange(next);
         editorCursor = range.start + proposal.length;
         lastCaretOffset = range.start + proposal.length;
-        companionOpen = true;
+        aiQueue.companionOpen = true;
         statusMessage = `${labels[action]} appliquée à la sélection.`;
         notify({
           kind: "success",
@@ -1209,11 +1119,11 @@
         !isSummary &&
         (action === "translate" || action === "reformulate" || action === "correct")
       ) {
-        const next = mergeBodyMarkdown(content, proposal.trim() + "\n");
+        const next = mergeBodyMarkdown(noteSession.content, proposal.trim() + "\n");
         silenceAiHelpers(action === "translate" ? 120000 : 90000);
         handleContentChange(next);
         editorCursor = Math.min(next.length, Math.max(1, proposal.length));
-        companionOpen = true;
+        aiQueue.companionOpen = true;
         statusMessage = `${labels[action]} appliquée à la note.`;
         return;
       }
@@ -1263,46 +1173,31 @@
       }
       statusMessage = `Erreur IA : ${e}`;
     } finally {
-      aiLoading = false;
+      aiQueue.aiLoading = false;
     }
   }
 
-  function pushSuggestion(
-    partial: Omit<AiSuggestion, "id"> & { id?: string },
-  ) {
-    const path = partial.notePath ?? selectedPath ?? undefined;
-    const suggestion: AiSuggestion = {
-      id: partial.id ?? crypto.randomUUID(),
-      ...partial,
-      notePath: path,
-    };
-    aiSuggestions = [
-      suggestion,
-      ...aiSuggestions.filter((s) => !s.notePath || s.notePath === path),
-    ].slice(0, 12);
-  }
-
   async function handleSkill(id: SkillId) {
-    if (!selectedPath) return;
+    if (!noteSession.selectedPath) return;
     const skill = getSkill(id);
-    const pathAtStart = selectedPath;
-    const epoch = aiEpoch;
-    const targetText = editorSelection?.text ?? noteBody(content);
+    const pathAtStart = noteSession.selectedPath;
+    const epoch = noteSession.aiEpoch;
+    const targetText = editorSelection?.text ?? noteBody(noteSession.content);
     if (!targetText.trim() && !skill.allowEmpty) {
       statusMessage = "La note est vide — rien à concevoir.";
       return;
     }
 
-    companionOpen = true;
+    aiQueue.companionOpen = true;
     const titles = flattenNotes(entries).map((e) => noteStem(e.path));
 
     // Related : RAG local → annexe
     if (id === "related") {
-      aiLoading = true;
+      aiQueue.aiLoading = true;
       statusMessage = "Notes liées — recherche…";
       try {
         const rag = await fetchRagContext(targetText.slice(0, 800) || titles.join(" "), pathAtStart);
-        if (epoch !== aiEpoch || selectedPath !== pathAtStart) return;
+        if (!stillCurrentAiRequest(epoch, pathAtStart)) return;
         const local = runSkillLocal("related", targetText, { ragBlock: formatRelatedAppendix(rag) });
         if (!local) {
           statusMessage = skill.emptyMessage;
@@ -1324,7 +1219,7 @@
       } catch (e) {
         statusMessage = `Notes liées indisponibles : ${e}`;
       } finally {
-        aiLoading = false;
+        aiQueue.aiLoading = false;
       }
       return;
     }
@@ -1385,7 +1280,7 @@
       }
     }
 
-    aiLoading = true;
+    aiQueue.aiLoading = true;
     statusMessage = `${skill.label} — en cours…`;
     try {
       let promptContent = targetText;
@@ -1402,7 +1297,7 @@
           siteName?: string | null;
           excerpt?: string | null;
         }>("fetch_page_meta", { url: urls[0] });
-        if (epoch !== aiEpoch || selectedPath !== pathAtStart) return;
+        if (!stillCurrentAiRequest(epoch, pathAtStart)) return;
         promptContent = formatEnrichContext(meta);
       }
 
@@ -1418,7 +1313,7 @@
         noteContext: noteContext.trim() || null,
         ragContext,
       });
-      if (epoch !== aiEpoch || selectedPath !== pathAtStart) return;
+      if (!stillCurrentAiRequest(epoch, pathAtStart)) return;
 
       let cleaned = sanitizeAiOutput(result, "custom");
       if (skill.applyMode === "tags") {
@@ -1446,7 +1341,7 @@
       // Enrich : toujours en append (ne jamais écraser la note).
       // Remplacement uniquement si la note entière n'est qu'un lien.
       if (skill.id === "enrich") {
-        const fullBody = noteBody(content);
+        const fullBody = noteBody(noteSession.content);
         const linkOnly = isLinkOnlyNote(fullBody) && !editorSelection;
         const mode = linkOnly ? "replace" : "append";
         const proposed =
@@ -1495,16 +1390,16 @@
         originalText: skill.applyMode === "append" ? "" : targetText,
         source: "manual",
         notePath: pathAtStart,
-        applyMode: skill.applyMode === "tags" ? "tags" : skill.applyMode,
+        applyMode: skill.applyMode,
         reason: skill.hint,
       });
       statusMessage = `${skill.label} prêt — appliquez ou ignorez.`;
     } catch (e) {
-      if (epoch === aiEpoch && selectedPath === pathAtStart) {
+      if (stillCurrentAiRequest(epoch, pathAtStart)) {
         statusMessage = `Erreur IA : ${e}`;
       }
     } finally {
-      aiLoading = false;
+      aiQueue.aiLoading = false;
     }
   }
 
@@ -1526,12 +1421,12 @@
   }
 
   async function handleCustomPrompt(instruction: string) {
-    if (!instruction.trim() || !selectedPath) return;
+    if (!instruction.trim() || !noteSession.selectedPath) return;
 
-    const epoch = aiEpoch;
-    const pathAtStart = selectedPath;
+    const epoch = noteSession.aiEpoch;
+    const pathAtStart = noteSession.selectedPath;
     const sel = editorSelection;
-    const targetText = sel?.text ?? noteBody(content);
+    const targetText = sel?.text ?? noteBody(noteSession.content);
     if (!targetText.trim()) {
       statusMessage = "Rien à traiter — sélectionnez du texte ou écrivez dans la note.";
       return;
@@ -1546,8 +1441,8 @@
       }
     }
 
-    aiLoading = true;
-    companionOpen = true;
+    aiQueue.aiLoading = true;
+    aiQueue.companionOpen = true;
     const scope = sel ? "sélection" : "note";
     statusMessage = `Prompt custom (${scope}) — en cours…`;
 
@@ -1563,7 +1458,7 @@
           : null,
       });
 
-      if (epoch !== aiEpoch || selectedPath !== pathAtStart) return;
+      if (!stillCurrentAiRequest(epoch, pathAtStart)) return;
 
       const proposal = buildAiProposal("custom", targetText, result, instruction.trim());
       if (!proposal) {
@@ -1591,19 +1486,19 @@
       });
       statusMessage = "Suggestion custom prête — appliquez ou ignorez.";
     } catch (e) {
-      if (epoch === aiEpoch && selectedPath === pathAtStart) {
+      if (stillCurrentAiRequest(epoch, pathAtStart)) {
         statusMessage = `Erreur IA : ${e}`;
       }
     } finally {
-      aiLoading = false;
+      aiQueue.aiLoading = false;
     }
   }
 
   function applySuggestion(id: string) {
-    const suggestion = aiSuggestions.find((s) => s.id === id);
+    const suggestion = aiQueue.aiSuggestions.find((s) => s.id === id);
     if (!suggestion) return;
-    if (suggestion.notePath && selectedPath && suggestion.notePath !== selectedPath) {
-      aiSuggestions = aiSuggestions.filter((s) => s.id !== id);
+    if (suggestion.notePath && noteSession.selectedPath && suggestion.notePath !== noteSession.selectedPath) {
+      aiQueue.aiSuggestions = aiQueue.aiSuggestions.filter((s) => s.id !== id);
       statusMessage = "Suggestion d'une autre note — ignorée.";
       return;
     }
@@ -1623,8 +1518,8 @@
         statusMessage = "Aucun tag valide à appliquer.";
         return;
       }
-      handleContentChange(setFrontmatterTags(content, tags));
-      aiSuggestions = aiSuggestions.filter((s) => s.id !== id);
+      handleContentChange(setFrontmatterTags(noteSession.content, tags));
+      aiQueue.aiSuggestions = aiQueue.aiSuggestions.filter((s) => s.id !== id);
       if (buddyEnabled) {
         buddyTip = {
           id: "applied",
@@ -1643,13 +1538,13 @@
       const block = /^##\s+/.test(raw)
         ? `\n\n---\n\n${raw}\n`
         : formatSummaryAppendix(raw, suggestion.label || "Résumé");
-      editorCursor = content.length + block.length;
-      handleContentChange(content + block);
+      editorCursor = noteSession.content.length + block.length;
+      handleContentChange(noteSession.content + block);
     } else if (suggestion.selection) {
       const start = suggestion.selection.start;
       const proposed = suggestion.proposedText;
       handleContentChange(
-        replaceTextRange(content, start, suggestion.selection.end, proposed),
+        replaceTextRange(noteSession.content, start, suggestion.selection.end, proposed),
       );
       editorCursor = start + proposed.length;
     } else if (
@@ -1658,15 +1553,15 @@
       suggestion.action === "correct" ||
       suggestion.action === "custom"
     ) {
-      const next = mergeBodyMarkdown(content, suggestion.proposedText.trim() + "\n");
+      const next = mergeBodyMarkdown(noteSession.content, suggestion.proposedText.trim() + "\n");
       editorCursor = Math.min(next.length, Math.max(1, suggestion.proposedText.length));
       handleContentChange(next);
     } else {
       handleContentChange(suggestion.proposedText);
-      editorCursor = Math.min(suggestion.proposedText.length, content.length);
+      editorCursor = Math.min(suggestion.proposedText.length, noteSession.content.length);
     }
 
-    aiSuggestions = aiSuggestions.filter((s) => s.id !== id);
+    aiQueue.aiSuggestions = aiQueue.aiSuggestions.filter((s) => s.id !== id);
     if (buddyEnabled) {
       buddyTip = {
         id: "applied",
@@ -1682,20 +1577,16 @@
         : "Suggestion appliquée.";
   }
 
-  function dismissSuggestion(id: string) {
-    aiSuggestions = aiSuggestions.filter((s) => s.id !== id);
-  }
-
   function toggleCompanion() {
-    companionOpen = !companionOpen;
-    if (companionOpen) {
+    aiQueue.companionOpen = !aiQueue.companionOpen;
+    if (aiQueue.companionOpen) {
       if (autoTypoFixEnabled) void runBatchAutoTypoFix();
       scheduleNoteScan(5000);
     }
   }
 
   function scheduleNoteScan(delayMs = 5000) {
-    if (!selectedPath) return;
+    if (!noteSession.selectedPath) return;
     if (isAiQuiet()) return;
     if (!proactiveEnabled && !autoTypoFixEnabled) return;
     if (noteScanTimer) clearTimeout(noteScanTimer);
@@ -1705,24 +1596,24 @@
   }
 
   function hasSuggestionForSpan(span: { start: number; end: number }) {
-    return aiSuggestions.some((s) => s.selection?.start === span.start && s.selection?.end === span.end);
+    return aiQueue.aiSuggestions.some((s) => s.selection?.start === span.start && s.selection?.end === span.end);
   }
 
   async function scanNoteForSuggestions() {
-    if (!selectedPath) return;
+    if (!noteSession.selectedPath) return;
 
-    if (autoTypoFixEnabled && !aiLoading) {
+    if (autoTypoFixEnabled && !aiQueue.aiLoading) {
       await runBatchAutoTypoFix();
     }
 
-    if (proactiveLoading || aiLoading || !proactiveEnabled || isAiQuiet()) return;
+    if (aiQueue.proactiveLoading || aiQueue.aiLoading || !proactiveEnabled || isAiQuiet()) return;
 
-    const typoLines = scanBodyTypoLines(content);
+    const typoLines = scanBodyTypoLines(noteSession.content);
     if (typoLines.length) {
       const target = typoLines.find((line) => !hasSuggestionForSpan(line));
       if (target) {
         await processProactiveSpan(
-          { ...target, text: content.slice(target.start, target.end) },
+          { ...target, text: noteSession.content.slice(target.start, target.end) },
           "passage fautif",
         );
       } else if (!proactiveStatus) {
@@ -1735,28 +1626,28 @@
   }
 
   async function processProactiveSpan(span: ParagraphSpan, scopeLabel = "passage en cours") {
-    if (!proactiveEnabled || !selectedPath || isAiQuiet()) return;
-    if (bodyHasTypoLines(content) && !likelyNeedsCorrection(span.text)) return;
+    if (!proactiveEnabled || !noteSession.selectedPath || isAiQuiet()) return;
+    if (bodyHasTypoLines(noteSession.content) && !likelyNeedsCorrection(span.text)) return;
 
     const minLen = 12;
     if (span.text.trim().length < minLen) return;
     if (!likelyNeedsCorrection(span.text)) return;
-    if (aiLoading || proactiveLoading) return;
+    if (aiQueue.aiLoading || aiQueue.proactiveLoading) return;
 
     const now = Date.now();
     const cooldown = 30000;
-    const key = `${selectedPath}:${span.start}:${span.end}:${span.text.trim()}`;
+    const key = `${noteSession.selectedPath}:${span.start}:${span.end}:${span.text.trim()}`;
     if (now - lastProactiveAt < cooldown && key === lastProactiveKey) return;
     if (key === lastProactiveKey && hasSuggestionForSpan(span)) return;
 
     if (hasSuggestionForSpan(span)) return;
 
-    proactiveLoading = true;
-    companionOpen = true;
+    aiQueue.proactiveLoading = true;
+    aiQueue.companionOpen = true;
     proactiveStatus = "Vérification orthographique…";
     statusMessage = proactiveStatus;
-    const epoch = aiEpoch;
-    const pathAtStart = selectedPath;
+    const epoch = noteSession.aiEpoch;
+    const pathAtStart = noteSession.selectedPath;
 
     const addSuggestion = (
       action: AiAction,
@@ -1765,7 +1656,7 @@
       reason?: string,
       scopeLabel = "passage en cours",
     ) => {
-      if (epoch !== aiEpoch || selectedPath !== pathAtStart) return;
+      if (!stillCurrentAiRequest(epoch, pathAtStart)) return;
       // Uniquement des corrections fidèles — jamais de reformulation auto
       if (action !== "correct") return;
       if (!isFaithfulCorrection(span.text, proposed)) return;
@@ -1790,12 +1681,12 @@
       if (ollamaStatus.available) {
         const result = await invoke<ProactiveSuggestionResponse>("ollama_proactive_suggest", {
           paragraph: span.text,
-          noteExcerpt: content.slice(0, 1500),
+          noteExcerpt: noteSession.content.slice(0, 1500),
           noteContext: noteContext.trim() || null,
           model: activeModel,
         });
 
-        if (epoch !== aiEpoch || selectedPath !== pathAtStart || isAiQuiet()) return;
+        if (!stillCurrentAiRequest(epoch, pathAtStart) || isAiQuiet()) return;
 
         if (result.suggest && result.proposed?.trim()) {
           const label = result.label?.toLowerCase() ?? "";
@@ -1822,9 +1713,9 @@
         }
       }
 
-      if (epoch !== aiEpoch || selectedPath !== pathAtStart) return;
+      if (!stillCurrentAiRequest(epoch, pathAtStart)) return;
 
-      proactiveStatus = bodyHasTypoLines(content)
+      proactiveStatus = bodyHasTypoLines(noteSession.content)
         ? "Certaines fautes nécessitent une correction manuelle."
         : "";
       statusMessage = proactiveStatus;
@@ -1833,15 +1724,15 @@
       proactiveStatus = `Analyse indisponible : ${e}`;
       statusMessage = proactiveStatus;
     } finally {
-      proactiveLoading = false;
+      aiQueue.proactiveLoading = false;
       if (!isAiQuiet()) scheduleNoteScan(20000);
     }
   }
 
   async function handleEditingIdle(span: ParagraphSpan) {
-    if (!selectedPath) return;
+    if (!noteSession.selectedPath) return;
 
-    if (autoTypoFixEnabled && bodyHasTypoLines(content)) {
+    if (autoTypoFixEnabled && bodyHasTypoLines(noteSession.content)) {
       await runBatchAutoTypoFix();
       return;
     }
@@ -1857,7 +1748,7 @@
   }
 
   function handleNoteContextChange(value: string) {
-    const next = setNoteContext(content, value);
+    const next = setNoteContext(noteSession.content, value);
     handleContentChange(next);
   }
 
@@ -1870,14 +1761,14 @@
   async function importImageFromPath(sourcePath: string, useGlobalMedia = false) {
     const relative = await invoke<string>("import_image", {
       sourcePath,
-      notePath: selectedPath,
+      notePath: noteSession.selectedPath,
       useGlobalMedia,
     });
     await queueImageMarkdown(relative);
   }
 
   async function importImagesFromPaths(paths: string[]) {
-    if (!selectedPath) {
+    if (!noteSession.selectedPath) {
       statusMessage = "Ouvrez une note pour y insérer une image.";
       return;
     }
@@ -1887,21 +1778,21 @@
   }
 
   async function importPastedImage(base64: string, extension: string) {
-    if (!selectedPath) {
+    if (!noteSession.selectedPath) {
       statusMessage = "Ouvrez une note pour y coller une image.";
       return;
     }
     const relative = await invoke<string>("import_image_bytes", {
       dataBase64: base64,
       extension,
-      notePath: selectedPath,
+      notePath: noteSession.selectedPath,
       useGlobalMedia: false,
     });
     await queueImageMarkdown(relative);
   }
 
   async function handleInsertImage() {
-    if (!selectedPath) {
+    if (!noteSession.selectedPath) {
       statusMessage = "Ouvrez une note pour y insérer une image.";
       return;
     }
@@ -1921,13 +1812,13 @@
   }
 
   async function handleExport() {
-    if (!selectedPath) return;
+    if (!noteSession.selectedPath) return;
     const dest = await save({
-      defaultPath: selectedPath.split("/").pop() ?? "note.md",
+      defaultPath: noteSession.selectedPath.split("/").pop() ?? "note.md",
       filters: [{ name: "Markdown", extensions: ["md"] }],
     });
     if (!dest) return;
-    await invoke("export_note", { relativePath: selectedPath, destination: dest });
+    await invoke("export_note", { relativePath: noteSession.selectedPath, destination: dest });
     statusMessage = "Note exportée.";
   }
 
@@ -2136,10 +2027,10 @@
 
   $effect(() => {
     // Recalcule le mood quand charge / suggestions changent
-    void aiLoading;
-    void proactiveLoading;
-    void aiSuggestions.length;
-    void selectedPath;
+    void aiQueue.aiLoading;
+    void aiQueue.proactiveLoading;
+    void aiQueue.aiSuggestions.length;
+    void noteSession.selectedPath;
     if (buddyEnabled) refreshBuddyTip();
   });
 </script>
@@ -2151,13 +2042,13 @@
     <div class="flex items-center gap-3 text-xs text-text-muted">
       <button
         type="button"
-        class="rounded-lg px-2 py-0.5 transition hover:bg-surface-muted {voiceStatus.recording ? 'bg-danger/20' : ''}"
+        class="rounded-lg px-2 py-0.5 transition hover:bg-surface-muted {voiceSession.status.recording ? 'bg-danger/20' : ''}"
         onclick={handleVoiceToggle}
-        title="Push-to-talk ({voiceStatus.hotkey}) — appuyez pour parler, rappuyez pour arrêter"
+        title="Push-to-talk ({voiceSession.status.hotkey}) — appuyez pour parler, rappuyez pour arrêter"
       >
         <span class="inline-flex items-center gap-1">
-          <PixelIcon name="mic" size={16} class={voiceStatus.recording ? "text-danger" : ""} />
-          {voiceStatus.recording ? "REC…" : voiceStatus.hotkey}
+          <PixelIcon name="mic" size={16} class={voiceSession.status.recording ? "text-danger" : ""} />
+          {voiceSession.status.recording ? "REC…" : voiceSession.status.hotkey}
         </span>
       </button>
       <button
@@ -2207,7 +2098,7 @@
     <Sidebar
       {entries}
       {vaultPath}
-      {selectedPath}
+      selectedPath={noteSession.selectedPath}
       onSelect={loadNote}
       onRefresh={refreshVault}
       onCreateNote={handleCreateNote}
@@ -2218,21 +2109,21 @@
       onImportText={handleImportText}
     />
 
-    {#if selectedPath}
+    {#if noteSession.selectedPath}
       <MarkdownEditor
-        {content}
+        content={noteSession.content}
         {title}
-        notePath={selectedPath}
+        notePath={noteSession.selectedPath}
         {vaultPath}
-        {dirty}
-        {saving}
+        dirty={noteSession.dirty}
+        saving={noteSession.saving}
         ollamaAvailable={ollamaStatus.available}
-        {aiLoading}
-        companionOpen={companionOpen}
-        companionBusy={aiLoading || proactiveLoading}
-        companionBusyLabel={aiLoading ? "Scribe travaille…" : proactiveLoading ? "Analyse…" : ""}
+        aiLoading={aiQueue.aiLoading}
+        companionOpen={aiQueue.companionOpen}
+        companionBusy={aiQueue.aiLoading || aiQueue.proactiveLoading}
+        companionBusyLabel={aiQueue.aiLoading ? "Scribe travaille…" : aiQueue.proactiveLoading ? "Analyse…" : ""}
         onChange={handleContentChange}
-        onSave={() => selectedPath && persistNote(selectedPath, content)}
+        onSave={() => noteSession.selectedPath && persistNote(noteSession.selectedPath, noteSession.content)}
         onAiAction={handleAiAction}
         onInsertImage={handleInsertImage}
         onImportImages={importImagesFromPaths}
@@ -2260,8 +2151,8 @@
         onOpenWikilink={handleOpenWikilink}
         insertImageMarkdown={pendingImageMarkdown}
         onImageMarkdownConsumed={() => (pendingImageMarkdown = null)}
-        dictationInsert={pendingDictation}
-        onDictationConsumed={() => (pendingDictation = null)}
+        dictationInsert={voiceSession.pendingDictation}
+        onDictationConsumed={() => (voiceSession.pendingDictation = null)}
       />
     {:else}
       <section
@@ -2314,10 +2205,8 @@
   onOllamaUpdated={(s) => (ollamaStatus = s)}
   onVaultChanged={async (path) => {
     vaultPath = path;
-    selectedPath = null;
-    content = "";
-    savedContent = "";
-    dirty = false;
+    resetNoteSession();
+    resetAiQueue();
     historyOpen = false;
     await refreshVault();
     statusMessage = `Vault : ${path}`;
@@ -2325,21 +2214,21 @@
 />
 
 <VoiceOverlay
-  recording={voiceStatus.recording}
-  transcribing={voiceStatus.transcribing}
-  modelLoading={voiceStatus.modelLoading}
-  hotkey={voiceStatus.hotkey}
+  recording={voiceSession.status.recording}
+  transcribing={voiceSession.status.transcribing}
+  modelLoading={voiceSession.status.modelLoading}
+  hotkey={voiceSession.status.hotkey}
 />
 
 <AiCompanionPanel
-  open={companionOpen && !!selectedPath}
-  {voiceStatus}
+  open={aiQueue.companionOpen && !!noteSession.selectedPath}
+  voiceStatus={voiceSession.status}
   onToggleRecord={handleVoiceToggle}
   {noteContext}
-  notePath={selectedPath}
-  suggestions={aiSuggestions.filter((s) => !s.notePath || s.notePath === selectedPath)}
-  {aiLoading}
-  {proactiveLoading}
+  notePath={noteSession.selectedPath}
+  suggestions={aiQueue.aiSuggestions.filter((s) => !s.notePath || s.notePath === noteSession.selectedPath)}
+  aiLoading={aiQueue.aiLoading}
+  proactiveLoading={aiQueue.proactiveLoading}
   {proactiveEnabled}
   {autoTypoFixEnabled}
   {autoSummarizeEnabled}
@@ -2356,21 +2245,21 @@
   ollamaAvailable={ollamaStatus.available}
   onApply={applySuggestion}
   onDismiss={dismissSuggestion}
-  onDismissAll={() => (aiSuggestions = [])}
-  onClose={() => (companionOpen = false)}
+  onDismissAll={() => (aiQueue.aiSuggestions = [])}
+  onClose={() => (aiQueue.companionOpen = false)}
   onCustomPromptFocusChange={(focused) => (customPromptFocused = focused)}
-  dictationToPrompt={pendingPromptDictation}
-  onDictationToPromptConsumed={() => (pendingPromptDictation = null)}
+  dictationToPrompt={voiceSession.pendingPromptDictation}
+  onDictationToPromptConsumed={() => (voiceSession.pendingPromptDictation = null)}
 />
 
-{#if selectedPath}
+{#if noteSession.selectedPath}
   <ScribeBuddy
     visible={buddyEnabled}
     mood={buddyMood}
     tip={buddyTip}
-    panelOpen={companionOpen}
+    panelOpen={aiQueue.companionOpen}
     onAction={handleBuddyAction}
-    onOpenCompanion={() => (companionOpen = true)}
+    onOpenCompanion={() => (aiQueue.companionOpen = true)}
     onDismissTip={() => {
       if (buddyTip) buddyDismissedId = buddyTip.id;
       buddyTip = null;
@@ -2392,16 +2281,16 @@
   }}
 />
 
-{#if selectedPath}
+{#if noteSession.selectedPath}
   <NoteHistoryPanel
     open={historyOpen}
-    notePath={selectedPath}
-    currentContent={content}
+    notePath={noteSession.selectedPath}
+    currentContent={noteSession.content}
     onClose={() => (historyOpen = false)}
     onRestored={(next) => {
-      content = next;
-      savedContent = next;
-      dirty = false;
+      noteSession.content = next;
+      noteSession.savedContent = next;
+      noteSession.dirty = false;
       statusMessage = "Version restaurée.";
       notify({
         kind: "success",
