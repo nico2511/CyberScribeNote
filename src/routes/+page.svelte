@@ -73,7 +73,9 @@
     scheduleNoteAutoSave,
     noteContentChange,
     resetNoteSession,
+    repairCurrentNoteWikilinks,
   } from "$lib/stores/noteSession.svelte";
+  import { repairCorruptedWikilinkMarkdown } from "$lib/markdown/bridge";
   import {
     voiceSession,
     refreshVoice,
@@ -647,6 +649,7 @@
         refreshBuddyTip();
         scheduleRelatedCheck();
         if (autoTypoFixEnabled) queueMicrotask(() => void runBatchAutoTypoFix());
+        void repairCurrentNoteWikilinks();
       },
     });
   }
@@ -1534,7 +1537,7 @@
     }
 
     if (suggestion.applyMode === "append" || suggestion.action === "summarize") {
-      const raw = suggestion.proposedText.trim();
+      const raw = repairCorruptedWikilinkMarkdown(suggestion.proposedText.trim());
       const block = /^##\s+/.test(raw)
         ? `\n\n---\n\n${raw}\n`
         : formatSummaryAppendix(raw, suggestion.label || "Résumé");

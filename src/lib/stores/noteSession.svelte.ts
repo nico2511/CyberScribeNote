@@ -17,7 +17,8 @@ let saveTimer: ReturnType<typeof setTimeout> | null = null;
 export async function persistNote(path: string, body: string): Promise<void> {
   noteSession.saving = true;
   try {
-    const stamped = touchUpdatedDate(body);
+    const clean = repairCorruptedWikilinkMarkdown(body);
+    const stamped = touchUpdatedDate(clean);
     await invoke("write_note", { relativePath: path, content: stamped });
     noteSession.savedContent = stamped;
     noteSession.dirty = false;
@@ -66,9 +67,22 @@ export function scheduleNoteAutoSave(onSave: () => void, delayMs = 1200): void {
 }
 
 export function noteContentChange(value: string, onDirty: () => void): void {
-  noteSession.content = value;
-  noteSession.dirty = value !== noteSession.savedContent;
+  const clean = repairCorruptedWikilinkMarkdown(value);
+  noteSession.content = clean;
+  noteSession.dirty = clean !== noteSession.savedContent;
   onDirty();
+}
+
+/** Répare le contenu courant et persiste si des spans HTML littéraux étaient présents. */
+export async function repairCurrentNoteWikilinks(): Promise<boolean> {
+  const path = noteSession.selectedPath;
+  if (!path) return false;
+  const fixed = repairCorruptedWikilinkMarkdown(noteSession.content);
+  if (fixed === noteSession.content) return false;
+  noteSession.content = fixed;
+  noteSession.dirty = fixed !== noteSession.savedContent;
+  await persistNote(path, fixed);
+  return true;
 }
 
 export function resetNoteSession(): void {

@@ -29,6 +29,17 @@ describe("repairCorruptedWikilinkMarkdown", () => {
     const broken = "## Notes liées\n\n- \\[\\[Stacks Docker\\]\\]</span> — excerpt\n";
     expect(repairCorruptedWikilinkMarkdown(broken)).toContain("- [[Stacks Docker]] — excerpt");
   });
+
+  it("fixes literal wikilink span HTML in markdown lists", () => {
+    const broken =
+      "## Notes liées\n\n- <span data-wikilink=\"Stacks Docker\" class=\"wikilink\">[[Stacks Docker]]</span> — excerpt\n";
+    const fixed = repairCorruptedWikilinkMarkdown(broken);
+    expect(fixed).toContain("- [[Stacks Docker]] — excerpt");
+    expect(fixed).not.toContain("<span");
+    const html = markdownToHtml(fixed, "note.md", "/vault");
+    expect(html).toContain('data-wikilink="Stacks Docker"');
+    expect(html).not.toContain("&lt;span");
+  });
 });
 
 describe("wikilink roundtrip", () => {

@@ -136,7 +136,7 @@ export function markdownToHtml(
   vaultPath: string,
 ): string {
   const { body } = noteBodyRange(content);
-  let md = body;
+  let md = repairCorruptedWikilinkMarkdown(body);
 
   // Lignes « vides » TipTap (paragraphes vides) : \u200b seul → <p></p>
   md = md.replace(/^(?:\u200b|[ \t])+$/gm, "<p></p>");
@@ -159,14 +159,45 @@ export function markdownToHtml(
   return marked.parse(md, { async: false }) as string;
 }
 
+const WIKILINK_CORRUPT_RE = /data-wikilink|<\/span>|\\\[\\\[|&lt;span/i;
+
 /** Répare les wikilinks corrompus (HTML littéral laissé par un ancien round-trip marked). */
 export function repairCorruptedWikilinkMarkdown(markdown: string): string {
-  return markdown
-    .replace(
-      /<span data-wikilink="([^"]+)" class="wikilink">\[\[([^\]]+)\]\]<\/span>/g,
-      "[[$1]]",
-    )
-    .replace(/\\\[\\\[([^\]]+)\\\]\\\]<\/span>/g, "[[$1]]");
+  if (!WIKILINK_CORRUPT_RE.test(markdown)) return markdown;
+
+  let md = markdown;
+
+  // Spans wikilink complets (attributs dans n'importe quel ordre ; pas de \\b après la valeur)
+  md = md.replace(
+    /<span\b[^>]*\bdata-wikilink=(?:"([^"]+)"|'([^']+)')[^>]*>\[\[([^\]]+)\]\]<\/span>/gi,
+    (_m, dq: string, sq: string) => `[[${(dq || sq).trim()}]]`,
+  );
+
+  // Entités HTML échappées
+  md = md.replace(
+    /&lt;span\b[^&]*\bdata-wikilink="([^"]+)"[^&]*&gt;\[\[([^\]]+)\]\]&lt;\/span&gt;/gi,
+    "[[$1]]",
+  );
+
+  // Résidus turndown / marked (crochets échappés + fermeture span)
+  md = md.replace(/\\\[\\\[([^\]]+)\\\]\\\]<\/span>/g, "[[$1]]");
+
+  // Span ouvert sans fermeture (wikilink visible à l'intérieur)
+  md = md.replace(
+    /<span\b[^>]*\bdata-wikilink=(?:"([^"]+)"|'([^']+)')[^>]*>(\[\[[^\]]+\]\])/gi,
+    "$3",
+  );
+
+  // Fermeture span orpheline après wikilink
+  md = md.replace(/(\[\[[^\]]+\]\])(?:<\/span>|&lt;\/span&gt;)/g, "$1");
+
+  // Span vide + texte wikilink + fermeture orpheline
+  md = md.replace(
+    /<span\b[^>]*\bdata-wikilink="([^"]+)"[^>]*><\/span>\[\[([^\]]+)\]\](?:&lt;\/span&gt;|<\/span>)?/gi,
+    "[[$1]]",
+  );
+
+  return md;
 }
 
 /** Sérialise le HTML TipTap vers Markdown (corps uniquement). */
