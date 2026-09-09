@@ -1,6 +1,6 @@
 [package]
 name = "cyberscribe-note"
-version = "0.5.0"
+version = "0.5.1"
 description = "Prise de notes locale, offline-first, avec IA et voix"
 authors = ["nico2511"]
 edition = "2021"
