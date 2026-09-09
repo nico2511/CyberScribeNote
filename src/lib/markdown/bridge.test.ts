@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { extractOutline, markdownToHtml } from "./bridge";
+import {
+  extractOutline,
+  htmlToMarkdown,
+  markdownToHtml,
+  repairCorruptedWikilinkMarkdown,
+} from "./bridge";
 import { repairMarkdownProposal, unwrapOuterMarkdownFence } from "./repair";
 
 describe("extractOutline", () => {
@@ -16,6 +21,25 @@ services:
 ## Section
 `;
     expect(extractOutline(md).map((i) => i.text)).toEqual(["Vrai titre", "Section"]);
+  });
+});
+
+describe("repairCorruptedWikilinkMarkdown", () => {
+  it("fixes escaped wikilink spans left in markdown", () => {
+    const broken = "## Notes liées\n\n- \\[\\[Stacks Docker\\]\\]</span> — excerpt\n";
+    expect(repairCorruptedWikilinkMarkdown(broken)).toContain("- [[Stacks Docker]] — excerpt");
+  });
+});
+
+describe("wikilink roundtrip", () => {
+  it("preserves list wikilinks through html roundtrip", () => {
+    const md = "## Notes liées\n\n- [[Stacks Docker]] — excerpt here\n";
+    const html = markdownToHtml(md, "note.md", "/vault");
+    expect(html).not.toMatch(/&lt;span[^>]*data-wikilink/);
+    expect(html).toMatch(/<span[^>]*data-wikilink="Stacks Docker"/);
+    const back = htmlToMarkdown(html);
+    expect(back).toContain("[[Stacks Docker]]");
+    expect(back).not.toContain("data-wikilink");
   });
 });
 

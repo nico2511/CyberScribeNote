@@ -6,7 +6,31 @@ import { escapeHtml, sanitizeTipTapHtml } from "$lib/markdown/sanitize";
 
 marked.setOptions({ gfm: true, breaks: true });
 
+function escapeAttr(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+}
+
 marked.use({
+  extensions: [
+    {
+      name: "wikilink",
+      level: "inline",
+      start(src) {
+        const idx = src.indexOf("[[");
+        return idx === -1 ? undefined : idx;
+      },
+      tokenizer(src) {
+        const match = /^\[\[([^\]]+)\]\]/.exec(src);
+        if (!match) return undefined;
+        const title = match[1].trim();
+        return { type: "wikilink", raw: match[0], title };
+      },
+      renderer(token) {
+        const t = escapeAttr(token.title);
+        return `<span data-wikilink="${t}" class="wikilink">[[${token.title}]]</span>`;
+      },
+    },
+  ],
   renderer: {
     /** HTML brut interdit : affiché échappé, puis filtré par DOMPurify. */
     html({ text }) {
@@ -102,18 +126,6 @@ turndown.addRule("resizableImage", {
   },
 });
 
-/** Transforme `[[Note]]` en spans TipTap avant marked. */
-export function preprocessWikilinks(markdown: string): string {
-  return markdown.replace(/\[\[([^\]]+)\]\]/g, (_m, title: string) => {
-    const t = title.trim();
-    return `<span data-wikilink="${escapeAttr(t)}" class="wikilink">[[${t}]]</span>`;
-  });
-}
-
-function escapeAttr(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
-}
-
 /**
  * Convertit le corps Markdown en HTML TipTap.
  * Les images utilisent `data-md-src` (chemin vault) et `src` résolu pour l'affichage.
@@ -124,7 +136,7 @@ export function markdownToHtml(
   vaultPath: string,
 ): string {
   const { body } = noteBodyRange(content);
-  let md = preprocessWikilinks(body);
+  let md = body;
 
   // Lignes « vides » TipTap (paragraphes vides) : \u200b seul → <p></p>
   md = md.replace(/^(?:\u200b|[ \t])+$/gm, "<p></p>");
@@ -145,6 +157,16 @@ export function markdownToHtml(
   );
 
   return marked.parse(md, { async: false }) as string;
+}
+
+/** Répare les wikilinks corrompus (HTML littéral laissé par un ancien round-trip marked). */
+export function repairCorruptedWikilinkMarkdown(markdown: string): string {
+  return markdown
+    .replace(
+      /<span data-wikilink="([^"]+)" class="wikilink">\[\[([^\]]+)\]\]<\/span>/g,
+      "[[$1]]",
+    )
+    .replace(/\\\[\\\[([^\]]+)\\\]\\\]<\/span>/g, "[[$1]]");
 }
 
 /** Sérialise le HTML TipTap vers Markdown (corps uniquement). */

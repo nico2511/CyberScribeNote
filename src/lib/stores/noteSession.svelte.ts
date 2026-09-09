@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { ensureVisibleContextBlock, touchUpdatedDate } from "$lib/note/frontmatter";
+import { repairCorruptedWikilinkMarkdown } from "$lib/markdown/bridge";
 
 export const noteSession = $state({
   selectedPath: null as string | null,
@@ -45,7 +46,7 @@ export async function loadNote(
 
   noteSession.selectedPath = path;
   const raw = await invoke<string>("read_note", { relativePath: path });
-  noteSession.content = ensureVisibleContextBlock(raw);
+  noteSession.content = ensureVisibleContextBlock(repairCorruptedWikilinkMarkdown(raw));
   noteSession.savedContent = noteSession.content;
   noteSession.dirty = false;
 
