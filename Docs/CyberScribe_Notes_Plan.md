@@ -120,33 +120,35 @@ Aucune dépendance cloud obligatoire.
 
 ## 5. Roadmap
 
-### Phase 1 – MVP (priorité) — largement en place
+### Phase 1 – MVP — **terminé** (socle v0.5.4)
 1. ~~Structure vault Markdown + dossiers~~
 2. ~~Éditeur TipTap de base~~ (+ outline, wikilinks, images)
 3. ~~Thèmes Light & Dark Pastel + UI minimaliste + icônes pixel~~
-4. ~~Intégration transcription vocale~~ (sidecar long-lived + heartbeat)
+4. ~~Intégration transcription vocale~~ (sidecar long-lived + heartbeat + VAD)
 5. ~~Mots-clés / commandes vocales de base~~ (« Scribe, … » — à stabiliser en usage réel)
 6. ~~Panneau Ctrl+T~~
-7. ~~Résumé automatique + premiers prompts IA (Ollama)~~
+7. ~~Résumé automatique + premiers prompts IA (Ollama)~~ (+ wizard setup)
 8. ~~Gestion basique des images~~
 9. ~~Export Markdown~~
-10. **En cours** : caret stable, tests, single-instance, frontmatter tags/dates, docs
+10. ~~Caret, single-instance, frontmatter tags/dates, docs, tests de base~~
 
-### Stabilisation (court terme)
-- Sidecar : heartbeat, shutdown à la fermeture, logs
-- Tests unitaires (voice parser, caret, vault path)
-- README / troubleshooting
-- Pas de bundling NSIS tant que le socle n’est pas figé
+### Stabilisation — **largement faite** (v0.4 → v0.5)
+- ~~Sidecar : heartbeat, shutdown, logs, Silero VAD~~
+- ~~Sécurité Tauri (sanitize, IPC, asset scope, SSRF, écritures atomiques)~~
+- ~~Rename notes + historique SHA256 + RAG par vault~~
+- ~~Stores Svelte branchés (`noteSession`, `voiceSession`, `aiQueue`)~~
+- Reste : alléger encore `+page.svelte`, tests stores, CI `tauri build`
+- Pas de bundling NSIS tant que le socle n’est pas figé (zip manuel OK)
 
-### Phase 2 – Enrichissement IA & UX
-- Pipeline RAG complet (embeddings Ollama + index local) — amorcé
+### Phase 2 – Enrichissement IA & UX — **prochaine priorité**
+- Pipeline RAG complet (embeddings Ollama + index local) — **en place, à enrichir**
+- Skill « indexer ce dossier → `sommaire.md` »
 - Auto-suggestions plus intelligentes
-- Outline / wikilinks / frontmatter aboutis
 - Templates de notes + graph simple
-- Cross-platform (macOS)
+- Cross-platform (macOS / Linux)
 
 ### Phase 3 – Distribution & options avancées
-- Bundling NSIS + updater Tauri + signature
+- Bundling NSIS + updater Tauri + signature Authenticode
 - Publication (Nextcloud / WebDAV…)
 - Partage d'équipe chiffré + édition live (CRDT)
 - Plugins / prompts custom
@@ -177,17 +179,16 @@ cyberscribe-notes/
 
 ## 7. Prochaines actions immédiates
 
-1. Valider le nom définitif
-2. Créer le repo / initialiser Tauri + Svelte + Tailwind
-3. Définir les CSS variables des deux thèmes
-4. Implémenter le vault + éditeur de base
-5. Brancher Ollama + premiers prompts
-6. Réintégrer / adapter la partie vocale de CyberScribe
+> Voir aussi le handoff post-réinstall : [REPRISE.md](REPRISE.md).
+
+1. Continuer le découpage de `+page.svelte` (buddy / Ollama / vault / skills)
+2. Skill « indexer ce dossier → `sommaire.md` » + templates / graph
+3. Tests stores + éventuellement CI build Windows
+4. Bundling NSIS + updater (quand le socle est figé)
 
 ---
 
 **Philosophie du projet**  
 Local • Privé • Vocal • Minimaliste • Doux pour les yeux • Pixel avec élégance
 
-Document généré le 1er septembre 2026.  
-Prêt à être affiné selon tes retours.
+Document généré le 1er septembre 2026 · mis à jour le 11 septembre 2026 (état v0.5.4).

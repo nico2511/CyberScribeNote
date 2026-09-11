@@ -7,26 +7,30 @@ Releases : [Releases](https://github.com/nico2511/CyberScribeNote/releases)
 
 Basé sur le plan [CyberScribe Notes](Docs/CyberScribe_Notes_Plan.md) et inspiré de [CyberScribe](https://github.com/nico2511/CyberScribe) pour la partie vocale.
 
-## Fonctionnalités (v0.4.x)
+**Reprise après réinstall système :** [Docs/REPRISE.md](Docs/REPRISE.md) — état v0.5.4, checklist, prochaines actions.
+
+## Fonctionnalités (v0.5.x)
 
 - Vault Markdown configurable (défaut `Documents/CyberScribeNote/vault` — changeable dans Réglages)
-- **Sync TXT → MD** : à chaque actualisation du vault, crée une copie `.md` pour chaque `.txt` / `.text` sans jumeau (Nextcloud, etc.) — l’original n’est pas modifié
-- Supprimer une note `.md` **supprime aussi** le `.txt` / `.text` jumeau (évite la boucle de recréation)
-- **Historique local** des notes (snapshots à la sauvegarde, vue duale actuel / version, restauration) — dossier `.history` masqué
-- Arborescence dossiers / notes — création, suppression, **glisser via poignée ⠿**, pastilles de compteur par dossier
-- Splash de bienvenue au premier lancement (désactivable)
-- **Éditeur TipTap WYSIWYG** + menu contextuel formatage, outline / TOC, wikilinks `[[Note]]`
+- **TXT → MD** : conversion des `.txt` / `.text` puis **suppression de la source** (notification) ; le jumeau suit les déplacements
+- Supprimer une note `.md` **supprime aussi** le `.txt` / `.text` jumeau
+- **Historique local** (snapshots, restauration) — clé SHA256 + migration lazy ; dossier `.history` masqué
+- Arborescence : dossiers **repliés par défaut**, suppression dossiers vides, **renommage**, **glisser via poignée ⠿**
+- Splash de bienvenue + **wizard Ollama** au premier lancement (install / démarrer / tirer un modèle)
+- **Éditeur TipTap WYSIWYG** + menu contextuel, outline / TOC, wikilinks `[[Note]]`
 - Frontmatter YAML : tags, date `updated` à la sauvegarde
 - Thèmes **Light Pastel** / **Dark Pastel** + icône app Scribe
 - Recherche rapide **Ctrl+T**
 - **Compagnon IA** + menu **IA ▾** (résumer / reformuler / corriger / traduire / skills)
 - Skills : Structurer, Sommaire, Lien (page / README GitHub), Points clés, Tags, Template, Brief, Plan, Notes liées (RAG), Wikiliens
+- **RAG par vault** (`.rag/index.json` v2, réindex incrémentale)
 - **Scribe** : tips + analyse de sélection ; dictée dans le prompt custom
 - Correction typo locale + Ollama / RAG optionnel
-- Panneau **Réglages** (Ctrl+,) : vault, sync TXT, historique, Ollama, voix (mode sidecar vs Python clair)
+- Panneau **Réglages** (Ctrl+,) : vault, sync TXT, historique, Ollama, voix (sidecar vs Python)
 - Images à la position du curseur (`_media/` par note)
-- **Dictée PTT** : sidecar `voice_worker.exe` (priorité) ou Python
+- **Dictée PTT** : sidecar `voice_worker.exe` (priorité, VAD Silero inclus) ou Python
 - Single-instance · Export `.md` · Import multi `.txt`
+- Durcissement sécurité Tauri (sanitize Markdown, IPC `.md`, asset scope vault, SSRF)
 
 ## Téléchargement (Windows)
 
@@ -136,10 +140,13 @@ Sortie : `src-tauri/target/release/cyberscribe-note.exe`
 
 1. ~~Vague 1 skills + buddy + enrich liens~~ (v0.3)
 2. ~~Sync TXT, historique notes, sidecar vocal clarifié~~ (v0.4)
-3. Skill « indexer ce dossier → `sommaire.md` » + templates / graph
-4. Bundling NSIS + updater · builds Linux
+3. ~~Sécurité Tauri, rename, RAG par vault, stores, wizard Ollama~~ (v0.5)
+4. Skill « indexer ce dossier → `sommaire.md` » + templates / graph
+5. Alléger encore `+page.svelte` · tests stores · CI build Windows
+6. Bundling NSIS + updater · builds Linux
 
-Détail : [Docs/CyberScribe_Notes_Plan.md](Docs/CyberScribe_Notes_Plan.md).
+**Reprise après réinstall :** [Docs/REPRISE.md](Docs/REPRISE.md)  
+Détail plan : [Docs/CyberScribe_Notes_Plan.md](Docs/CyberScribe_Notes_Plan.md).
 
 ## Licence
 

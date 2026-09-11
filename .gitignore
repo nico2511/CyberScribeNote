@@ -22,3 +22,5 @@ src-tauri/binaries/
 *.spec.bak
 /1
 dist-release/
+*.zip
+CyberScribeNote-win.zip
