@@ -1,0 +1,49 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: npm ci
+
+      - name: Build app and voice sidecar
+        run: npm run release:win
+
+      - name: Package zip (2 exe only)
+        shell: pwsh
+        run: |
+          $app = "src-tauri/target/release/cyberscribe-note.exe"
+          $voice = "voice/voice_worker.exe"
+          if (-not (Test-Path $app)) { throw "Missing $app" }
+          if (-not (Test-Path $voice)) { throw "Missing $voice" }
+          New-Item -ItemType Directory -Force -Path dist-release | Out-Null
+          Copy-Item $app dist-release/
+          Copy-Item $voice dist-release/
+          Compress-Archive -Path dist-release/* -DestinationPath CyberScribeNote-win.zip -Force
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: CyberScribeNote-win.zip
+          generate_release_notes: true

@@ -141,9 +141,9 @@ Sortie : `src-tauri/target/release/cyberscribe-note.exe`
 1. ~~Vague 1 skills + buddy + enrich liens~~ (v0.3)
 2. ~~Sync TXT, historique notes, sidecar vocal clarifié~~ (v0.4)
 3. ~~Sécurité Tauri, rename, RAG par vault, stores, wizard Ollama~~ (v0.5)
-4. Skill « indexer ce dossier → `sommaire.md` » + templates / graph
-5. Alléger encore `+page.svelte` · tests stores · CI build Windows
-6. Bundling NSIS + updater · builds Linux
+4. ~~Refactor audit + indexer dossier + CI release Windows~~ (v0.5.5)
+5. Templates / graph · E2E Tauri
+6. Bundling NSIS + updater (+ Authenticode) · builds Linux
 
 **Reprise après réinstall :** [Docs/REPRISE.md](Docs/REPRISE.md)  
 Détail plan : [Docs/CyberScribe_Notes_Plan.md](Docs/CyberScribe_Notes_Plan.md).

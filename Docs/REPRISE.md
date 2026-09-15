@@ -1,8 +1,8 @@
 # Point de reprise — CyberScribeNote
 
-**Dernière version publiée :** [v0.5.4](https://github.com/nico2511/CyberScribeNote/releases/tag/v0.5.4) (9 sept. 2026)  
-**Branche :** `main` — à jour avec `origin/main`  
-**État code :** clean (pas de changements locaux non commités hors zip de release)
+**Dernière version publiée :** [v0.5.5](https://github.com/nico2511/CyberScribeNote/releases/tag/v0.5.5)  
+**Branche :** `main`  
+**État code :** clean
 
 Document écrit pour reprendre après réinstallation Windows.
 
@@ -58,9 +58,10 @@ Clés localStorage utiles : `csn-setup-done`, `csn-splash-dismissed` (wizard / s
 - **v0.5.2** — stores branchés dans `+page.svelte` (`noteSession`, `voiceSession`, `aiQueue`)
 - **v0.5.3** — correctifs packaging zip
 - **v0.5.4** — dossiers repliés par défaut, suppression dossiers vides, `.txt` jumeau suit les moves, TXT→MD puis suppression source, wizard Ollama premier lancement
+- **v0.5.5** — refactor audit (stores, orchestrateur, 97 Vitest), skill **Indexer dossier** → `sommaire.md`, CI Rust + workflow **release** Windows (zip 2 exe), modules `vault_history` / `voice_cache` / `voice_hotkey`
 
 ### Audit initial
-P0 / P1 / P2 **terminés**. Il ne reste que du **P3 optionnel** (NSIS, Authenticode, updater, builds Linux, dialogs in-app).
+P0 / P1 / P2 **terminés**. **P3** en cours : release CI OK ; NSIS / Authenticode / updater / Linux **toujours optionnels** (`bundle.active: false`).
 
 ---
 
@@ -68,9 +69,9 @@ P0 / P1 / P2 **terminés**. Il ne reste que du **P3 optionnel** (NSIS, Authentic
 
 ### Dette technique (post-refactor audit — état actuel)
 1. `+page.svelte` ~900 lignes (orchestration UI) — acceptable ; gros modules dans `src/lib/app/` et stores
-2. Tests : 96 Vitest (lib + stores) ; pas d’E2E Tauri
-3. CI : Ubuntu (deps GTK pour `cargo test`) + Windows smoke + couverture ; `cargo clippy` informatif ; **`tauri build` Windows manuel**
-4. Rust : `vault_path`, `vault_history`, `ollama_sanitize`, `voice_util` extraits ; `voice.rs` encore volumineux
+2. Tests : Vitest (lib + stores + search) ; pas d’E2E Tauri
+3. CI : frontend + Windows smoke + Rust ; **release** sur tag `v*` (build Windows + zip) ; `cargo clippy` informatif
+4. Rust : `vault_history`, `voice_cache`, `voice_hotkey`, `voice_util` ; cœur worker encore dans `voice.rs`
 5. Valider manuellement migration historique legacy + reindex RAG sur un vrai vault
 
 ### Produit (roadmap README / plan)
