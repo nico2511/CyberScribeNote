@@ -22,36 +22,45 @@
     saveAutoTypoFixEnabled,
     loadAutoSummarizeEnabled,
     saveAutoSummarizeEnabled,
-    loadBuddyEnabled,
-    saveBuddyEnabled,
   } from "$lib/stores/companion";
-  import { autoFixAllTypoLines, tryAutoFixSpan, lineNeedsAiTypoFix } from "$lib/ai/autoTypo";
-  import { sanitizeAiOutput } from "$lib/ai/sanitize";
-  import { hasMeaningfulDiff } from "$lib/ai/textDiff";
-  import { buildAiProposal, buildLocalCorrection } from "$lib/ai/buildProposal";
-  import { finalizeCorrection } from "$lib/ai/localCorrect";
-  import { isFaithfulCorrection } from "$lib/ai/faithful";
-  import { likelyNeedsCorrection } from "$lib/ai/typoHints";
-  import { scanBodyTypoLines, bodyHasTypoLines } from "$lib/note/scanTypos";
-  import { parseVoiceTranscript } from "$lib/voice/keywords";
-  import { replaceTextRange, type AiActionRequest, type TextSelection } from "$lib/voice/commands";
+  import { type AiActionRequest, type TextSelection } from "$lib/voice/commands";
   import { mapCaretThroughReplace, locateSelectionInContent } from "$lib/note/caret";
   import { resolveWikilink, flattenNotes, noteStem } from "$lib/vault/wikilinks";
+  import { type SkillId } from "$lib/ai/skills";
+  import type { BuddyAction } from "$lib/ai/scribeBuddy";
   import {
-    extractExistingSummary,
-    formatSummaryAppendix,
-    isDuplicateSummary,
-    translateLangLabel,
-  } from "$lib/ai/languages";
-  import { fetchRagContext } from "$lib/ai/rag";
-  import { getSkill, parseTagsProposal, type SkillId } from "$lib/ai/skills";
+    buddySession,
+    initBuddyFromStorage,
+    resolveBuddyMood,
+    refreshBuddyTip,
+    bumpBuddyTyping,
+    setBuddyEnabled,
+    dismissBuddyTip,
+    handleBuddyAction as handleBuddyActionCore,
+    clearBuddyTimers,
+  } from "$lib/stores/buddySession.svelte";
   import {
-    scanBuddyTip,
-    moodFromActivity,
-    type BuddyMood,
-    type BuddyTip,
-    type BuddyAction,
-  } from "$lib/ai/scribeBuddy";
+    searchSession,
+    openSearchPanel,
+    closeSearchPanel,
+    runVaultSearch,
+  } from "$lib/stores/searchSession.svelte";
+  import { applySuggestion as applyAiSuggestion } from "$lib/app/applySuggestion";
+  import { processVoiceTranscript } from "$lib/app/voiceTranscriptHandler";
+  import {
+    scanNoteForSuggestions,
+    handleEditingIdle as handleEditingIdleProactive,
+    type ProactiveScanDeps,
+  } from "$lib/app/proactiveScan";
+  import { maybeAutoSummarize } from "$lib/app/autoSummarize";
+  import { createAutoTypoNotice, runBatchAutoTypoFix } from "$lib/app/autoTypoFlow";
+  import {
+    pickImageFile,
+    importImageFromPath as importImagePath,
+    importPastedImageBytes,
+    imageMarkdownForRelative,
+    imageImportStatusMessage,
+  } from "$lib/app/noteImages";
   import { noteBody, parseNoteContext, setNoteContext, setFrontmatterTags } from "$lib/note/frontmatter";
   import { mergeBodyMarkdown } from "$lib/markdown/bridge";
   import PixelIcon from "$lib/components/PixelIcon.svelte";
@@ -107,17 +116,9 @@
     runCustomPrompt,
     aiOrchestratorDepsFromPage,
   } from "$lib/app/aiOrchestrator";
-  import type {
-    AiAction,
-    SearchResult,
-    ThemeMode,
-    VoiceTranscript,
-    AiSuggestion,
-    ProactiveSuggestionResponse,
-  } from "$lib/types";
+  import type { ThemeMode, VoiceTranscript } from "$lib/types";
 
   let theme = $state<ThemeMode>("light");
-  let searchOpen = $state(false);
   let settingsOpen = $state(false);
   let splashOpen = $state(false);
   let setupOpen = $state(false);
@@ -127,36 +128,19 @@
     historyOpen = false;
   });
 
-  let searchQuery = $state("");
-  let searchResults = $state<SearchResult[]>([]);
-  let searchLoading = $state(false);
   let proactiveEnabled = $state(false);
   let autoTypoFixEnabled = $state(true);
   let autoSummarizeEnabled = $state(false);
-  let buddyEnabled = $state(true);
-  let buddyTyping = $state(false);
-  let buddyTip = $state<BuddyTip | null>(null);
-  let buddyDismissedId = $state<string | null>(null);
-  let buddyHasRelated = $state(false);
-  let buddyTypingTimer: ReturnType<typeof setTimeout> | null = null;
-  let buddyScanTimer: ReturnType<typeof setTimeout> | null = null;
-  let buddyRelatedTimer: ReturnType<typeof setTimeout> | null = null;
   let customPromptFocused = $state(false);
   let editorCursor = $state<number | null>(null);
   let editorSelection = $state<TextSelection | null>(null);
   /** Dernière position curseur connue (pour insérer la dictée au bon endroit). */
   let lastCaretOffset = 0;
   let pendingImageMarkdown = $state<string | null>(null);
-  let autoTypoNoticeTimer: ReturnType<typeof setTimeout> | null = null;
-  let autoTypoFixBusy = false;
   let proactiveStatus = $state("");
   let statusMessage = $state("");
   let autoSummaryTimer: ReturnType<typeof setTimeout> | null = null;
-  let lastAutoSummaryKey = "";
-
   let unlisteners: UnlistenFn[] = [];
-
-  let searchTimer: ReturnType<typeof setTimeout> | null = null;
 
   let title = $derived.by(() => {
     if (!noteSession.selectedPath) return "Aucune note sélectionnée";
@@ -173,12 +157,60 @@
   );
   let editorHighlight = $derived(editorHighlightFromSuggestions());
 
-  let lastProactiveAt = 0;
-  let lastProactiveKey = "";
   let voiceCrashRestarts = 0;
   let voiceCrashWindowStart = 0;
   let noteScanTimer: ReturnType<typeof setTimeout> | null = null;
   let fullTypoScanTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const proactiveStatusRef = { value: "" };
+  $effect(() => {
+    proactiveStatusRef.value = proactiveStatus;
+  });
+
+  const showAutoTypoNotice = createAutoTypoNotice(
+    (msg) => {
+      statusMessage = msg;
+    },
+    () => statusMessage,
+  );
+
+  function autoTypoDeps() {
+    return {
+      enabled: autoTypoFixEnabled,
+      activeModel,
+      ollamaAvailable: ollamaSession.status.available,
+      ensureOllamaRunning,
+      getLastCaret: () => lastCaretOffset,
+      setLastCaret: (n: number) => {
+        lastCaretOffset = n;
+      },
+      setEditorCursor: (n: number | null) => {
+        editorCursor = n;
+      },
+      scheduleAutoSave,
+      scheduleFullTypoScan,
+      scheduleNoteScan,
+      showNotice: showAutoTypoNotice,
+      proactiveStatus: proactiveStatusRef,
+    };
+  }
+
+  function proactiveDeps(): ProactiveScanDeps {
+    return {
+      proactiveEnabled,
+      autoTypoFixEnabled,
+      noteContext,
+      activeModel,
+      ollamaAvailable: ollamaSession.status.available,
+      proactiveStatus: proactiveStatusRef,
+      setStatus: (msg) => {
+        statusMessage = msg;
+        proactiveStatus = proactiveStatusRef.value;
+      },
+      runBatchAutoTypoFix: () => runBatchAutoTypoFix(autoTypoDeps()),
+      scheduleNoteScan,
+    };
+  }
 
   function silenceAiHelpers(ms = 90000) {
     markAiQuiet(ms);
@@ -230,292 +262,48 @@
     }
   });
 
-  async function tryAiAutoTypoFix(span: ParagraphSpan, baseContent?: string): Promise<boolean> {
-    if (autoTypoFixBusy || !autoTypoFixEnabled) return false;
-
-    const body = baseContent ?? noteSession.content;
-    const lineText = body.slice(span.start, span.end);
-    if (!lineNeedsAiTypoFix(lineText)) return false;
-
-    autoTypoFixBusy = true;
-    try {
-      if (!ollamaSession.status.available) {
-        const ok = await ensureOllamaRunning(true);
-        if (!ok) return false;
-      }
-
-      showAutoTypoNotice("Analyse de la phrase pour corriger les fautes…");
-      const corrected = await invoke<string>("ollama_transform_note", {
-        action: "correct",
-        content: lineText,
-        model: activeModel,
-        noteContext: null,
-        targetLanguage: null,
-        ragContext: null,
-      });
-      const proposal =
-        buildAiProposal("correct", lineText, corrected) ??
-        (() => {
-          const merged = finalizeCorrection(lineText, corrected);
-          if (hasMeaningfulDiff(lineText, merged) && isFaithfulCorrection(lineText, merged)) {
-            return merged;
-          }
-          return null;
-        })();
-      if (!proposal) return false;
-
-      const next = replaceTextRange(body, span.start, span.end, proposal);
-      if (next === body) return false;
-
-      applyAutoTypoResult(
-        next,
-        span.start,
-        span.end,
-        proposal.length,
-        "✓ Fautes corrigées (analyse de la phrase)",
-      );
-      return true;
-    } catch {
-      return false;
-    } finally {
-      autoTypoFixBusy = false;
-    }
-  }
-
-  async function runAiTypoFixPass(baseContent?: string) {
-    if (!autoTypoFixEnabled || !noteSession.selectedPath) return;
-
-    for (let attempt = 0; attempt < 5; attempt++) {
-      const body = baseContent ?? noteSession.content;
-      const lines = scanBodyTypoLines(body).filter((line) => {
-        const text = body.slice(line.start, line.end);
-        return lineNeedsAiTypoFix(text);
-      });
-      if (!lines.length) break;
-
-      const line = lines[0];
-      const text = body.slice(line.start, line.end);
-      const applied = await tryAiAutoTypoFix({ ...line, text }, body);
-      if (!applied) break;
-      baseContent = noteSession.content;
-    }
-  }
-
-  function showAutoTypoNotice(detail: string) {
-    statusMessage = detail;
-    if (autoTypoNoticeTimer) clearTimeout(autoTypoNoticeTimer);
-    autoTypoNoticeTimer = setTimeout(() => {
-      if (statusMessage === detail) statusMessage = "";
-    }, 3500);
-  }
-
-  function applyAutoTypoResult(
-    next: string,
-    editStart: number,
-    editEnd: number,
-    replacementLen: number,
-    message: string,
-  ) {
-    const caret = mapCaretThroughReplace(
-      lastCaretOffset,
-      editStart,
-      editEnd,
-      replacementLen,
-    );
-    noteSession.content = next;
-    lastCaretOffset = caret;
-    editorCursor = caret;
-    noteSession.dirty = next !== noteSession.savedContent;
-    scheduleAutoSave();
-    if (noteSession.selectedPath && noteSession.dirty) void persistNote(noteSession.selectedPath, next);
-    scheduleFullTypoScan(800);
-    scheduleNoteScan(8000);
-    showAutoTypoNotice(message);
-  }
-
   async function handleAutoTypoFix(_span: ParagraphSpan) {
-    if (!autoTypoFixEnabled || voiceSession.status.recording || voiceSession.status.transcribing) return;
-    await runBatchAutoTypoFix();
-  }
-
-  async function runBatchAutoTypoFix() {
-    if (!autoTypoFixEnabled || !noteSession.selectedPath || autoTypoFixBusy) return;
-    if (voiceSession.status.recording || voiceSession.status.transcribing) return;
-    autoTypoFixBusy = true;
-
-    try {
-      aiQueue.aiSuggestions = aiQueue.aiSuggestions.filter(
-        (s) => !(s.action === "correct" && s.source === "proactive"),
-      );
-
-      const before = noteSession.content;
-      const caretBefore = lastCaretOffset;
-      const { content: next, count, caret } = autoFixAllTypoLines(noteSession.content, caretBefore);
-      let working = noteSession.content;
-      if (count > 0 && next !== before) {
-        working = next;
-        noteSession.content = next;
-        lastCaretOffset = caret;
-        editorCursor = caret;
-        noteSession.dirty = next !== noteSession.savedContent;
-        scheduleAutoSave();
-        if (noteSession.selectedPath) await persistNote(noteSession.selectedPath, next);
-        showAutoTypoNotice(`✓ ${count} faute${count > 1 ? "s" : ""} corrigée${count > 1 ? "s" : ""} automatiquement`);
-      }
-      await runAiTypoFixPass(working);
-      proactiveStatus = bodyHasTypoLines(noteSession.content)
-        ? "Certaines fautes nécessitent une correction manuelle."
-        : count > 0
-          ? "Fautes corrigées."
-          : "";
-    } finally {
-      autoTypoFixBusy = false;
-    }
+    if (!autoTypoFixEnabled || isVoiceBusy()) return;
+    await runBatchAutoTypoFix(autoTypoDeps());
   }
 
   function handleAutoTypoToggle(enabled: boolean) {
     autoTypoFixEnabled = enabled;
     saveAutoTypoFixEnabled(enabled);
-    if (enabled) runBatchAutoTypoFix();
+    if (enabled) void runBatchAutoTypoFix(autoTypoDeps());
   }
 
   function appendTranscript(fragment: string) {
     appendTranscriptStore(fragment, (ms) => silenceAiHelpers(ms));
     if (autoTypoFixEnabled) {
       setTimeout(() => {
-        if (!isVoiceBusy()) void runBatchAutoTypoFix();
+        if (!isVoiceBusy()) void runBatchAutoTypoFix(autoTypoDeps());
       }, 5000);
     }
   }
 
+  function voiceDeps() {
+    return {
+      setStatus: (msg: string) => {
+        statusMessage = msg;
+      },
+      silenceAiHelpers,
+      openSearch: () => openSearchPanel(),
+      runSearch: runVaultSearch,
+      openNoteByQuery,
+      ensureOllamaRunning,
+      openSettings,
+      ollamaAvailable: ollamaSession.status.available,
+      customPromptFocused,
+      companionOpen: aiQueue.companionOpen,
+      appendTranscript,
+      handleAiAction,
+      handleSkill,
+    };
+  }
+
   async function handleVoiceTranscript(text: string) {
-    const chain = enqueueVoiceTranscript(async () => {
-      if (!text.trim()) {
-        const msg =
-          "Aucune parole reconnue — phrase trop longue, trop de pauses, ou micro trop bas. Réessayez, ou passez la durée max à 90 s (Réglages → Voix).";
-        statusMessage = msg;
-        notify({ kind: "warning", title: "Aucune parole détectée", message: msg, key: "voice-empty" });
-        return;
-      }
-
-      // Ne pas laisser un scan fautes écraser le feedback vocal tout de suite
-      silenceAiHelpers(8000);
-
-      const parsed = parseVoiceTranscript(text);
-
-      if (parsed.kind === "unknown") {
-        const preview = text.slice(0, 80);
-        const msg = `Commande non reconnue : « ${preview} ». Dites par ex. « Scribe, corrige ».`;
-        statusMessage = msg;
-        notify({
-          kind: "warning",
-          title: "Commande vocale",
-          message: msg,
-          key: "voice-cmd",
-        });
-        return;
-      }
-
-      if (parsed.kind === "search") {
-        openSearch();
-        if (parsed.query) await runSearch(parsed.query);
-        const msg = parsed.query
-          ? `Recherche vocale : ${parsed.query}`
-          : "Recherche vocale — saisissez un mot-clé.";
-        statusMessage = msg;
-        notify({ kind: "success", title: "Scribe · chercher", message: msg, key: "voice-cmd" });
-        return;
-      }
-
-      if (parsed.kind === "open") {
-        await openNoteByQuery(parsed.query);
-        return;
-      }
-
-      if (parsed.kind === "ai") {
-        const labels: Record<string, string> = {
-          summarize: "résume",
-          reformulate: "reformule",
-          correct: "corrige",
-          translate: parsed.translateTo
-            ? `traduis en ${translateLangLabel(parsed.translateTo).toLowerCase()}`
-            : "traduis",
-        };
-        const phrase = labels[parsed.action] ?? parsed.action;
-        if (!noteSession.selectedPath) {
-          const msg = "Ouvrez une note pour les commandes IA vocales (PTT).";
-          statusMessage = msg;
-          notify({ kind: "warning", title: "Scribe", message: msg, key: "voice-cmd" });
-          return;
-        }
-        if (!noteBody(noteSession.content).trim()) {
-          const msg = "La note est vide — rien à transformer. Dictez d'abord du texte.";
-          statusMessage = msg;
-          notify({ kind: "warning", title: "Scribe", message: msg, key: "voice-cmd" });
-          return;
-        }
-        if (!ollamaSession.status.available && parsed.action !== "correct") {
-          const ok = await ensureOllamaRunning(true);
-          if (!ok) {
-            const msg = "Ollama hors ligne — impossible d'exécuter la commande IA.";
-            statusMessage = msg;
-            notify({ kind: "error", title: "Scribe", message: msg, key: "voice-cmd" });
-            settingsOpen = true;
-            return;
-          }
-        }
-        statusMessage = `Commande vocale : ${phrase}…`;
-        notify({
-          kind: "info",
-          title: "Scribe",
-          message: `Commande « ${phrase} » reconnue — traitement…`,
-          key: "voice-cmd",
-        });
-        await handleAiAction({
-          action: parsed.action,
-          translateTo: parsed.translateTo,
-        });
-        return;
-      }
-
-      if (parsed.kind === "skill") {
-        if (!noteSession.selectedPath) {
-          const msg = "Ouvrez une note pour les commandes de conception (PTT).";
-          statusMessage = msg;
-          notify({ kind: "warning", title: "Scribe", message: msg, key: "voice-cmd" });
-          return;
-        }
-        statusMessage = `Commande vocale : ${getSkill(parsed.skillId).label}…`;
-        notify({
-          kind: "info",
-          title: "Scribe",
-          message: `Skill « ${getSkill(parsed.skillId).label} » — traitement…`,
-          key: "voice-cmd",
-        });
-        await handleSkill(parsed.skillId);
-        return;
-      }
-
-      if (!noteSession.selectedPath) {
-        const msg = "Ouvrez une note pour insérer la dictée (PTT).";
-        statusMessage = msg;
-        notify({ kind: "warning", title: "Note requise", message: msg });
-        return;
-      }
-
-      if (customPromptFocused && aiQueue.companionOpen) {
-        voiceSession.pendingPromptDictation = { text: parsed.text, id: Date.now() };
-        const preview = `« ${parsed.text.slice(0, 60)}${parsed.text.length > 60 ? "…" : ""} »`;
-        statusMessage = `Dictée → prompt custom : ${preview}`;
-        notify({ kind: "success", title: "Dictée (prompt)", message: preview, key: "voice-prompt" });
-        return;
-      }
-
-      appendTranscript(parsed.text);
-      const preview = `« ${parsed.text.slice(0, 60)}${parsed.text.length > 60 ? "…" : ""} »`;
-      statusMessage = `Dictée insérée : ${preview}`;
-      notify({ kind: "success", title: "Dictée insérée", message: preview });
-    });
+    const chain = enqueueVoiceTranscript(() => processVoiceTranscript(voiceDeps(), text));
     await chain;
   }
 
@@ -525,8 +313,8 @@
       const msg = `Aucune note trouvée pour « ${query} ».`;
       statusMessage = msg;
       notify({ kind: "warning", title: "Scribe · ouvrir", message: msg, key: "voice-cmd" });
-      openSearch();
-      await runSearch(query);
+      openSearchPanel();
+      await runVaultSearch(query);
       return;
     }
     await loadNote(match.path);
@@ -596,18 +384,16 @@
       onLoaded: () => {
         clearSuggestionsForNote(null);
         editorSelection = null;
-        lastProactiveKey = "";
-        lastAutoSummaryKey = "";
         proactiveStatus = "";
+        proactiveStatusRef.value = "";
         aiQueue.companionOpen = true;
         scheduleNoteScan(4000);
         scheduleAutoSummary(45000);
-        buddyTyping = false;
-        buddyDismissedId = null;
-        buddyHasRelated = false;
+        buddySession.typing = false;
+        buddySession.dismissedId = null;
+        buddySession.hasRelated = false;
         refreshBuddyTip();
-        scheduleRelatedCheck();
-        if (autoTypoFixEnabled) queueMicrotask(() => void runBatchAutoTypoFix());
+        if (autoTypoFixEnabled) queueMicrotask(() => void runBatchAutoTypoFix(autoTypoDeps()));
         void repairCurrentNoteWikilinks();
       },
     });
@@ -624,7 +410,7 @@
     if (fullTypoScanTimer) clearTimeout(fullTypoScanTimer);
     fullTypoScanTimer = setTimeout(() => {
       if (voiceSession.status.recording || voiceSession.status.transcribing) return;
-      void runBatchAutoTypoFix();
+      void runBatchAutoTypoFix(autoTypoDeps());
     }, delayMs);
   }
 
@@ -635,193 +421,33 @@
       scheduleNoteScan(8000);
     }
     scheduleAutoSummary(40000);
-    bumpBuddyTyping();
+    bumpBuddyTyping(() => refreshBuddyTip(editorSelection?.text));
   }
 
-  function bumpBuddyTyping() {
-    if (!buddyEnabled) return;
-    buddyTyping = true;
-    if (buddyTypingTimer) clearTimeout(buddyTypingTimer);
-    buddyTypingTimer = setTimeout(() => {
-      buddyTyping = false;
-      refreshBuddyTip();
-    }, 1100);
-    // Pendant la frappe : mood listen immédiat, tip allégée
-    refreshBuddyTip();
-  }
-
-  function refreshBuddyTip() {
-    if (!buddyEnabled || !noteSession.selectedPath) {
-      buddyTip = null;
-      return;
-    }
-    if (buddyScanTimer) clearTimeout(buddyScanTimer);
-    const run = () => {
-      const tip = scanBuddyTip({
-        markdown: noteBody(noteSession.content),
-        typing: buddyTyping,
-        busy: aiQueue.aiLoading || aiQueue.proactiveLoading,
-        hasSuggestions: aiQueue.aiSuggestions.some((s) => !s.notePath || s.notePath === noteSession.selectedPath),
-        noteOpen: !!noteSession.selectedPath,
-        hasRelated: buddyHasRelated,
-        selectionText: editorSelection?.text,
-      });
-      if (tip && tip.id === buddyDismissedId && tip.id !== "typing" && tip.id !== "busy") {
-        buddyTip = { ...tip, message: tip.mood === "listen" ? tip.message : "" };
-        return;
-      }
-      if (tip && tip.id !== buddyDismissedId) {
-        buddyDismissedId = null;
-      }
-      buddyTip = tip;
+  function summarizeDeps() {
+    return {
+      enabled: autoSummarizeEnabled,
+      activeModel,
+      setStatus: (msg: string) => {
+        statusMessage = msg;
+      },
+      ensureOllamaRunning,
+      ollamaAvailable: ollamaSession.status.available,
     };
-    // Tips structure après une courte pause ; listen/busy immédiats
-    if (buddyTyping || aiQueue.aiLoading || aiQueue.proactiveLoading) run();
-    else {
-      buddyScanTimer = setTimeout(run, 450);
-      scheduleRelatedCheck();
-    }
-  }
-
-  function scheduleRelatedCheck() {
-    if (!buddyEnabled || !noteSession.selectedPath) return;
-    const body = noteBody(noteSession.content).trim();
-    if (body.length < 120) {
-      buddyHasRelated = false;
-      return;
-    }
-    if (buddyRelatedTimer) clearTimeout(buddyRelatedTimer);
-    const path = noteSession.selectedPath;
-    buddyRelatedTimer = setTimeout(async () => {
-      try {
-        const rag = await fetchRagContext(body.slice(0, 800), path);
-        if (noteSession.selectedPath !== path) return;
-        const next = rag.length > 80;
-        if (next !== buddyHasRelated) {
-          buddyHasRelated = next;
-          refreshBuddyTip();
-        }
-      } catch {
-        buddyHasRelated = false;
-      }
-    }, 2800);
-  }
-
-  let buddyMood = $derived.by((): BuddyMood => {
-    if (!buddyEnabled) return "idle";
-    if (buddyTip && !buddyTyping && !(aiQueue.aiLoading || aiQueue.proactiveLoading)) return buddyTip.mood;
-    return moodFromActivity(buddyTyping, aiQueue.aiLoading || aiQueue.proactiveLoading);
-  });
-
-  function handleBuddyToggle(enabled: boolean) {
-    buddyEnabled = enabled;
-    saveBuddyEnabled(enabled);
-    if (!enabled) {
-      buddyTip = null;
-      buddyTyping = false;
-    } else {
-      refreshBuddyTip();
-    }
-  }
-
-  function handleBuddyAction(action: BuddyAction) {
-    if (action.kind === "dismiss") {
-      if (buddyTip) buddyDismissedId = buddyTip.id;
-      buddyTip = null;
-      return;
-    }
-    if (action.kind === "open_companion") {
-      aiQueue.companionOpen = true;
-      return;
-    }
-    if (action.kind === "skill") {
-      aiQueue.companionOpen = true;
-      void handleSkill(action.skillId);
-    }
   }
 
   function scheduleAutoSummary(delayMs = 40000) {
     if (!autoSummarizeEnabled || !noteSession.selectedPath) return;
-    // Après ouverture, attendre au moins 45 s avant le premier résumé auto
     const sinceOpen = Date.now() - noteSession.noteOpenedAt;
     const wait = Math.max(delayMs, 45000 - sinceOpen);
     if (autoSummaryTimer) clearTimeout(autoSummaryTimer);
     autoSummaryTimer = setTimeout(() => {
-      void maybeAutoSummarize(noteSession.selectedPath!, noteSession.content);
+      void maybeAutoSummarize(
+        summarizeDeps(),
+        noteSession.selectedPath!,
+        noteSession.content,
+      );
     }, wait);
-  }
-
-  async function maybeAutoSummarize(path: string, body: string) {
-    if (!autoSummarizeEnabled) return;
-    // Pas de résumé auto juste après ouverture (évite le spam à chaud)
-    if (Date.now() - noteSession.noteOpenedAt < 20000) return;
-
-    const epoch = noteSession.aiEpoch;
-    const text = noteBody(body).trim();
-    if (text.length < 280) return;
-    if (text.split(/\s+/).length < 40) return;
-
-    const existing = extractExistingSummary(body);
-    const key = `${path}:${text.length}:${text.slice(0, 80)}`;
-    if (key === lastAutoSummaryKey) return;
-    if (aiQueue.aiLoading || aiQueue.proactiveLoading) return;
-
-    if (!ollamaSession.status.available) {
-      const ok = await ensureOllamaRunning(true);
-      if (!ok) return;
-    }
-
-    const already = aiQueue.aiSuggestions.some(
-      (s) =>
-        s.action === "summarize" &&
-        s.source === "proactive" &&
-        s.notePath === path &&
-        !s.selection,
-    );
-    if (already) return;
-
-    try {
-      statusMessage = "Résumé automatique en cours…";
-      const ragContext = await fetchRagContext(text.slice(0, 800), path);
-      if (!stillCurrentAiRequest(epoch, path)) return;
-
-      const result = await invoke<string>("ollama_summarize_note", {
-        content: text,
-        model: activeModel,
-        noteContext: parseNoteContext(body).trim() || null,
-        ragContext: ragContext || null,
-      });
-      if (!stillCurrentAiRequest(epoch, path)) return;
-
-      const proposal = buildAiProposal("summarize", text, result);
-      if (!proposal) return;
-      if (isDuplicateSummary(existing, proposal)) {
-        lastAutoSummaryKey = key;
-        statusMessage = "Résumé déjà à jour — aucune proposition.";
-        return;
-      }
-
-      lastAutoSummaryKey = key;
-      aiQueue.companionOpen = true;
-      const suggestion: AiSuggestion = {
-        id: crypto.randomUUID(),
-        action: "summarize",
-        label: "Résumé",
-        scope: "à ajouter en fin de note",
-        proposedText: proposal,
-        originalText: "",
-        notePath: path,
-        source: "proactive",
-        applyMode: "append",
-        reason: "Inactivité d'édition — complément, pas un remplacement",
-      };
-      aiQueue.aiSuggestions = [suggestion, ...aiQueue.aiSuggestions.filter((s) => s.notePath === path)].slice(0, 12);
-      statusMessage = "Résumé prêt (ajout en fin de note) — appliquez ou ignorez.";
-    } catch (e) {
-      if (stillCurrentAiRequest(epoch, path)) {
-        statusMessage = `Résumé auto indisponible : ${e}`;
-      }
-    }
   }
 
   function handleAutoSummarizeToggle(enabled: boolean) {
@@ -907,93 +533,10 @@
   }
 
 
-  function applySuggestion(id: string) {
-    const suggestion = aiQueue.aiSuggestions.find((s) => s.id === id);
-    if (!suggestion) return;
-    if (suggestion.notePath && noteSession.selectedPath && suggestion.notePath !== noteSession.selectedPath) {
-      aiQueue.aiSuggestions = aiQueue.aiSuggestions.filter((s) => s.id !== id);
-      statusMessage = "Suggestion d'une autre note — ignorée.";
-      return;
-    }
-
-    // Ne jamais laisser le proactif / typo-IA / résumé auto réécrire juste après une applique
-    silenceAiHelpers(
-      suggestion.action === "translate" ||
-        suggestion.action === "reformulate" ||
-        suggestion.action === "custom"
-        ? 120000
-        : 60000,
-    );
-
-    if (suggestion.applyMode === "tags" || suggestion.skillId === "tags") {
-      const tags = parseTagsProposal(suggestion.proposedText);
-      if (!tags.length) {
-        statusMessage = "Aucun tag valide à appliquer.";
-        return;
-      }
-      handleContentChange(setFrontmatterTags(noteSession.content, tags));
-      aiQueue.aiSuggestions = aiQueue.aiSuggestions.filter((s) => s.id !== id);
-      if (buddyEnabled) {
-        buddyTip = {
-          id: "applied",
-          mood: "ok",
-          message: `Tags : ${tags.join(", ")}`,
-          priority: 95,
-        };
-        setTimeout(() => refreshBuddyTip(), 1800);
-      }
-      statusMessage = "Tags appliqués au frontmatter.";
-      return;
-    }
-
-    if (suggestion.applyMode === "append" || suggestion.action === "summarize") {
-      const raw = repairCorruptedWikilinkMarkdown(suggestion.proposedText.trim());
-      const block = /^##\s+/.test(raw)
-        ? `\n\n---\n\n${raw}\n`
-        : formatSummaryAppendix(raw, suggestion.label || "Résumé");
-      editorCursor = noteSession.content.length + block.length;
-      handleContentChange(noteSession.content + block);
-    } else if (suggestion.selection) {
-      const start = suggestion.selection.start;
-      const proposed = suggestion.proposedText;
-      handleContentChange(
-        replaceTextRange(noteSession.content, start, suggestion.selection.end, proposed),
-      );
-      editorCursor = start + proposed.length;
-    } else if (
-      suggestion.action === "translate" ||
-      suggestion.action === "reformulate" ||
-      suggestion.action === "correct" ||
-      suggestion.action === "custom"
-    ) {
-      const next = mergeBodyMarkdown(noteSession.content, suggestion.proposedText.trim() + "\n");
-      editorCursor = Math.min(next.length, Math.max(1, suggestion.proposedText.length));
-      handleContentChange(next);
-    } else {
-      handleContentChange(suggestion.proposedText);
-      editorCursor = Math.min(suggestion.proposedText.length, noteSession.content.length);
-    }
-
-    aiQueue.aiSuggestions = aiQueue.aiSuggestions.filter((s) => s.id !== id);
-    if (buddyEnabled) {
-      buddyTip = {
-        id: "applied",
-        mood: "ok",
-        message: "C'est noté.",
-        priority: 95,
-      };
-      setTimeout(() => refreshBuddyTip(), 1800);
-    }
-    statusMessage =
-      suggestion.action === "summarize"
-        ? "Résumé ajouté en fin de note."
-        : "Suggestion appliquée.";
-  }
-
   function toggleCompanion() {
     aiQueue.companionOpen = !aiQueue.companionOpen;
     if (aiQueue.companionOpen) {
-      if (autoTypoFixEnabled) void runBatchAutoTypoFix();
+      if (autoTypoFixEnabled) void runBatchAutoTypoFix(autoTypoDeps());
       scheduleNoteScan(5000);
     }
   }
@@ -1003,180 +546,64 @@
     if (isAiQuiet()) return;
     if (!proactiveEnabled && !autoTypoFixEnabled) return;
     if (noteScanTimer) clearTimeout(noteScanTimer);
-    noteScanTimer = setTimeout(() => {
-      void scanNoteForSuggestions();
+    noteScanTimer = setTimeout(async () => {
+      await scanNoteForSuggestions(proactiveDeps());
+      proactiveStatus = proactiveStatusRef.value;
     }, delayMs);
   }
 
-  function hasSuggestionForSpan(span: { start: number; end: number }) {
-    return aiQueue.aiSuggestions.some((s) => s.selection?.start === span.start && s.selection?.end === span.end);
-  }
-
-  async function scanNoteForSuggestions() {
-    if (!noteSession.selectedPath) return;
-
-    if (autoTypoFixEnabled && !aiQueue.aiLoading) {
-      await runBatchAutoTypoFix();
-    }
-
-    if (aiQueue.proactiveLoading || aiQueue.aiLoading || !proactiveEnabled || isAiQuiet()) return;
-
-    const typoLines = scanBodyTypoLines(noteSession.content);
-    if (typoLines.length) {
-      const target = typoLines.find((line) => !hasSuggestionForSpan(line));
-      if (target) {
-        await processProactiveSpan(
-          { ...target, text: noteSession.content.slice(target.start, target.end) },
-          "passage fautif",
-        );
-      } else if (!proactiveStatus) {
-        proactiveStatus = "Des fautes restent — utilisez Corriger (clic droit) si besoin.";
-      }
-      return;
-    }
-
-    proactiveStatus = "";
-  }
-
-  async function processProactiveSpan(span: ParagraphSpan, scopeLabel = "passage en cours") {
-    if (!proactiveEnabled || !noteSession.selectedPath || isAiQuiet()) return;
-    if (bodyHasTypoLines(noteSession.content) && !likelyNeedsCorrection(span.text)) return;
-
-    const minLen = 12;
-    if (span.text.trim().length < minLen) return;
-    if (!likelyNeedsCorrection(span.text)) return;
-    if (aiQueue.aiLoading || aiQueue.proactiveLoading) return;
-
-    const now = Date.now();
-    const cooldown = 30000;
-    const key = `${noteSession.selectedPath}:${span.start}:${span.end}:${span.text.trim()}`;
-    if (now - lastProactiveAt < cooldown && key === lastProactiveKey) return;
-    if (key === lastProactiveKey && hasSuggestionForSpan(span)) return;
-
-    if (hasSuggestionForSpan(span)) return;
-
-    aiQueue.proactiveLoading = true;
-    aiQueue.companionOpen = true;
-    proactiveStatus = "Vérification orthographique…";
-    statusMessage = proactiveStatus;
-    const epoch = noteSession.aiEpoch;
-    const pathAtStart = noteSession.selectedPath;
-
-    const addSuggestion = (
-      action: AiAction,
-      label: string,
-      proposed: string,
-      reason?: string,
-      scopeLabel = "passage en cours",
-    ) => {
-      if (!stillCurrentAiRequest(epoch, pathAtStart)) return;
-      // Uniquement des corrections fidèles — jamais de reformulation auto
-      if (action !== "correct") return;
-      if (!isFaithfulCorrection(span.text, proposed)) return;
-      pushSuggestion({
-        action: "correct",
-        label,
-        scope: scopeLabel,
-        source: "proactive",
-        reason,
-        proposedText: proposed,
-        originalText: span.text,
-        notePath: pathAtStart ?? undefined,
-        selection: { start: span.start, end: span.end, text: span.text },
-      });
-      lastProactiveKey = key;
-      lastProactiveAt = now;
-      proactiveStatus = "";
-      statusMessage = "Correction proposée — appliquez ou ignorez.";
-    };
-
-    try {
-      if (ollamaSession.status.available) {
-        const result = await invoke<ProactiveSuggestionResponse>("ollama_proactive_suggest", {
-          paragraph: span.text,
-          noteExcerpt: noteSession.content.slice(0, 1500),
-          noteContext: noteContext.trim() || null,
-          model: activeModel,
-        });
-
-        if (!stillCurrentAiRequest(epoch, pathAtStart) || isAiQuiet()) return;
-
-        if (result.suggest && result.proposed?.trim()) {
-          const label = result.label?.toLowerCase() ?? "";
-          if (label.includes("reform")) {
-            lastProactiveAt = now;
-            proactiveStatus = "";
-            return;
-          }
-          const proposed = sanitizeAiOutput(result.proposed, "correct");
-          if (
-            proposed.trim() &&
-            hasMeaningfulDiff(span.text, proposed) &&
-            isFaithfulCorrection(span.text, proposed)
-          ) {
-            addSuggestion(
-              "correct",
-              result.label?.trim() || "Correction",
-              proposed,
-              result.reason?.trim(),
-              scopeLabel,
-            );
-            return;
-          }
-        }
-      }
-
-      if (!stillCurrentAiRequest(epoch, pathAtStart)) return;
-
-      proactiveStatus = bodyHasTypoLines(noteSession.content)
-        ? "Certaines fautes nécessitent une correction manuelle."
-        : "";
-      statusMessage = proactiveStatus;
-      lastProactiveAt = now;
-    } catch (e) {
-      proactiveStatus = `Analyse indisponible : ${e}`;
-      statusMessage = proactiveStatus;
-    } finally {
-      aiQueue.proactiveLoading = false;
-      if (!isAiQuiet()) scheduleNoteScan(20000);
-    }
+  function applySuggestion(id: string) {
+    applyAiSuggestion(
+      {
+        onContentChange: handleContentChange,
+        setEditorCursor: (n) => {
+          editorCursor = n;
+        },
+        silenceAiHelpers,
+        setStatus: (msg) => {
+          statusMessage = msg;
+        },
+        buddyEnabled: buddySession.enabled,
+        onBuddyApplied: (tip) => {
+          buddySession.tip = tip;
+        },
+        refreshBuddyTip: () => refreshBuddyTip(editorSelection?.text),
+      },
+      id,
+    );
   }
 
   async function handleEditingIdle(span: ParagraphSpan) {
-    if (!noteSession.selectedPath) return;
-
-    if (autoTypoFixEnabled && bodyHasTypoLines(noteSession.content)) {
-      await runBatchAutoTypoFix();
-      return;
-    }
-
-    if (!proactiveEnabled || isAiQuiet()) return;
-    if (!likelyNeedsCorrection(span.text)) return;
-    await processProactiveSpan(span);
+    await handleEditingIdleProactive(proactiveDeps(), span);
+    proactiveStatus = proactiveStatusRef.value;
   }
 
-  function handleProactiveToggle(enabled: boolean) {
-    proactiveEnabled = enabled;
-    saveProactiveEnabled(enabled);
+  function handleBuddyToggle(enabled: boolean) {
+    setBuddyEnabled(enabled);
   }
 
-  function handleNoteContextChange(value: string) {
-    const next = setNoteContext(noteSession.content, value);
-    handleContentChange(next);
+  function handleBuddyAction(action: BuddyAction) {
+    handleBuddyActionCore(action, {
+      openCompanion: () => {
+        aiQueue.companionOpen = true;
+      },
+      runSkill: (id) => void handleSkill(id),
+    });
   }
+
+  let buddyMood = $derived(resolveBuddyMood());
 
   async function queueImageMarkdown(relative: string) {
-    const alt = relative.split("/").pop()?.replace(/\.[^.]+$/, "") ?? "image";
-    pendingImageMarkdown = `![${alt}](${relative})`;
-    statusMessage = `Image copiée dans ${relative.includes("/_media/") || relative.startsWith("_media/") ? "le dossier de la note" : "media/"}.`;
+    pendingImageMarkdown = imageMarkdownForRelative(relative);
+    statusMessage = imageImportStatusMessage(relative);
   }
 
   async function importImageFromPath(sourcePath: string, useGlobalMedia = false) {
-    const relative = await invoke<string>("import_image", {
+    const relative = await importImagePath(
       sourcePath,
-      notePath: noteSession.selectedPath,
+      noteSession.selectedPath,
       useGlobalMedia,
-    });
+    );
     await queueImageMarkdown(relative);
   }
 
@@ -1195,12 +622,7 @@
       statusMessage = "Ouvrez une note pour y coller une image.";
       return;
     }
-    const relative = await invoke<string>("import_image_bytes", {
-      dataBase64: base64,
-      extension,
-      notePath: noteSession.selectedPath,
-      useGlobalMedia: false,
-    });
+    const relative = await importPastedImageBytes(base64, extension, noteSession.selectedPath);
     await queueImageMarkdown(relative);
   }
 
@@ -1209,19 +631,36 @@
       statusMessage = "Ouvrez une note pour y insérer une image.";
       return;
     }
-
-    const picked = await open({
-      multiple: false,
-      filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "gif", "webp", "bmp"] }],
-    });
-    if (!picked) return;
-
-    const sourcePath = typeof picked === "string" ? picked : picked;
+    const sourcePath = await pickImageFile();
+    if (!sourcePath) return;
     try {
       await importImageFromPath(sourcePath, false);
     } catch (e) {
       statusMessage = `Erreur image : ${e}`;
     }
+  }
+
+  function openSettings() {
+    settingsOpen = true;
+  }
+
+  function closeSettings() {
+    settingsOpen = false;
+  }
+
+  async function selectFromSearch(path: string) {
+    closeSearchPanel();
+    await loadNote(path);
+  }
+
+  function handleProactiveToggle(enabled: boolean) {
+    proactiveEnabled = enabled;
+    saveProactiveEnabled(enabled);
+  }
+
+  function handleNoteContextChange(value: string) {
+    const next = setNoteContext(noteSession.content, value);
+    handleContentChange(next);
   }
 
   async function handleExport() {
@@ -1273,51 +712,11 @@
     saveTheme(theme);
   }
 
-  async function runSearch(q: string) {
-    searchQuery = q;
-    if (searchTimer) clearTimeout(searchTimer);
-    if (!q.trim()) {
-      searchResults = [];
-      return;
-    }
-    searchLoading = true;
-    searchTimer = setTimeout(async () => {
-      try {
-        searchResults = await invoke<SearchResult[]>("search_vault", { query: q });
-      } finally {
-        searchLoading = false;
-      }
-    }, 200);
-  }
-
-  function openSearch() {
-    searchOpen = true;
-    searchQuery = "";
-    searchResults = [];
-  }
-
-  function closeSearch() {
-    searchOpen = false;
-  }
-
-  function openSettings() {
-    settingsOpen = true;
-  }
-
-  function closeSettings() {
-    settingsOpen = false;
-  }
-
-  async function selectFromSearch(path: string) {
-    closeSearch();
-    await loadNote(path);
-  }
-
   function onGlobalKeydown(e: KeyboardEvent) {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "t") {
       e.preventDefault();
-      if (searchOpen) closeSearch();
-      else openSearch();
+      if (searchSession.open) closeSearchPanel();
+      else openSearchPanel();
     }
     if ((e.ctrlKey || e.metaKey) && e.key === ",") {
       e.preventDefault();
@@ -1332,7 +731,7 @@
     proactiveEnabled = loadProactiveEnabled();
     autoTypoFixEnabled = loadAutoTypoFixEnabled();
     autoSummarizeEnabled = loadAutoSummarizeEnabled();
-    buddyEnabled = loadBuddyEnabled();
+    initBuddyFromStorage();
     await refreshVault();
     await ensureOllamaRunning(true);
     await refreshVoice();
@@ -1448,18 +847,15 @@
 
   onDestroy(() => {
     for (const u of unlisteners) u();
-    if (buddyTypingTimer) clearTimeout(buddyTypingTimer);
-    if (buddyScanTimer) clearTimeout(buddyScanTimer);
-    if (buddyRelatedTimer) clearTimeout(buddyRelatedTimer);
+    clearBuddyTimers();
   });
 
   $effect(() => {
-    // Recalcule le mood quand charge / suggestions changent
     void aiQueue.aiLoading;
     void aiQueue.proactiveLoading;
     void aiQueue.aiSuggestions.length;
     void noteSession.selectedPath;
-    if (buddyEnabled) refreshBuddyTip();
+    if (buddySession.enabled) refreshBuddyTip(editorSelection?.text);
   });
 </script>
 
@@ -1498,7 +894,7 @@
       <button
         type="button"
         class="rounded-2xl border border-border px-3 py-1.5 text-xs transition hover:bg-surface-muted"
-        onclick={openSearch}
+        onclick={openSearchPanel}
       >
         ⌕ Recherche
         <kbd class="ml-1 rounded border border-border px-1 text-[10px]">Ctrl+T</kbd>
@@ -1562,9 +958,8 @@
         onSelectionChange={(sel) => {
           editorSelection = sel;
           if (sel) lastCaretOffset = sel.end;
-          if (buddyEnabled) {
-            if (buddyScanTimer) clearTimeout(buddyScanTimer);
-            buddyScanTimer = setTimeout(() => refreshBuddyTip(), sel?.text.trim() ? 350 : 200);
+          if (buddySession.enabled) {
+            setTimeout(() => refreshBuddyTip(sel?.text), sel?.text.trim() ? 350 : 200);
           }
         }}
         onCaretChange={(offset) => {
@@ -1617,13 +1012,13 @@
 </div>
 
 <SearchPanel
-  open={searchOpen}
-  query={searchQuery}
-  results={searchResults}
-  loading={searchLoading}
-  onQueryChange={runSearch}
+  open={searchSession.open}
+  query={searchSession.query}
+  results={searchSession.results}
+  loading={searchSession.loading}
+  onQueryChange={runVaultSearch}
   onSelect={selectFromSearch}
-  onClose={closeSearch}
+  onClose={closeSearchPanel}
 />
 
 <SettingsPanel
@@ -1660,7 +1055,7 @@
   {proactiveEnabled}
   {autoTypoFixEnabled}
   {autoSummarizeEnabled}
-  buddyEnabled={buddyEnabled}
+  buddyEnabled={buddySession.enabled}
   {proactiveStatus}
   customTargetLabel={customPromptTargetLabel}
   onContextChange={handleNoteContextChange}
@@ -1682,16 +1077,13 @@
 
 {#if noteSession.selectedPath}
   <ScribeBuddy
-    visible={buddyEnabled}
+    visible={buddySession.enabled}
     mood={buddyMood}
-    tip={buddyTip}
+    tip={buddySession.tip}
     panelOpen={aiQueue.companionOpen}
     onAction={handleBuddyAction}
     onOpenCompanion={() => (aiQueue.companionOpen = true)}
-    onDismissTip={() => {
-      if (buddyTip) buddyDismissedId = buddyTip.id;
-      buddyTip = null;
-    }}
+    onDismissTip={dismissBuddyTip}
   />
 {/if}
 

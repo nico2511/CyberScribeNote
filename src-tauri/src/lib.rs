@@ -1,6 +1,7 @@
 mod commands;
 mod fs_util;
 mod net_util;
+mod vault_path;
 
 use commands::{
     create_folder, create_note, delete_item, export_note, get_app_config,
