@@ -19,7 +19,7 @@ npm install
 
 ### Prérequis dev
 - Node.js 18+
-- Rust (rustup)
+- Rust (rustup) — sur Linux : libs Tauri (`libwebkit2gtk-4.1-dev`, `libayatana-appindicator3-dev`, `librsvg2-dev`, `patchelf`) pour `cargo test`
 - Python 3.10+ (voix en mode Python, ou pour builder le sidecar)
 - Ollama (optionnel, IA / RAG)
 - [GitHub CLI `gh`](https://cli.github.com/) si tu publies des releases
@@ -66,14 +66,15 @@ P0 / P1 / P2 **terminés**. Il ne reste que du **P3 optionnel** (NSIS, Authentic
 
 ## 3. Prochaines actions (priorisées)
 
-### Dette technique (recommandé avant grosses features)
-1. Continuer à alléger `src/routes/+page.svelte` (~2100+ lignes) — extraire buddy / Ollama / vault / skills
-2. Tests unitaires sur les stores (`noteSession`, `voiceSession`, `aiQueue`)
-3. CI : ajouter éventuellement `tauri build` (lourd) ou au moins un job Windows documenté
-4. Valider manuellement migration historique legacy + reindex RAG sur un vrai vault
+### Dette technique (post-refactor audit — état actuel)
+1. `+page.svelte` ~900 lignes (orchestration UI) — acceptable ; gros modules dans `src/lib/app/` et stores
+2. Tests : 96 Vitest (lib + stores) ; pas d’E2E Tauri
+3. CI : Ubuntu (deps GTK pour `cargo test`) + Windows smoke + couverture ; `cargo clippy` informatif ; **`tauri build` Windows manuel**
+4. Rust : `vault_path`, `vault_history`, `ollama_sanitize`, `voice_util` extraits ; `voice.rs` encore volumineux
+5. Valider manuellement migration historique legacy + reindex RAG sur un vrai vault
 
 ### Produit (roadmap README / plan)
-1. Skill « indexer ce dossier → `sommaire.md` »
+1. ~~Skill « indexer ce dossier → `sommaire.md` »~~ — skill **Indexer dossier** (companion + voix « indexe dossier »)
 2. Templates de notes + graph simple
 3. Auto-suggestions plus intelligentes / RAG abouti
 4. Bundling NSIS + updater Tauri (+ signature Authenticode)

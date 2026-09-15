@@ -10,6 +10,7 @@ import { extractUrls, isLinkOnlyNote } from "$lib/ai/links";
 export type SkillId =
   | "structure"
   | "outline"
+  | "folderIndex"
   | "enrich"
   | "keypoints"
   | "tags"
@@ -69,6 +70,18 @@ export const NOTE_SKILLS: NoteSkill[] = [
     voice: /^(sommaire|outline|table des matieres|table des mati\w*)\b/,
     promptMatch: /\b(sommaire|outline|table des mati[eè]res)\b/i,
     emptyMessage: "Pas assez de titres (H2+) pour un sommaire.",
+  },
+  {
+    id: "folderIndex",
+    label: "Indexer dossier",
+    hint: "Crée ou met à jour sommaire.md dans ce dossier",
+    needsLlm: false,
+    applyMode: "replace",
+    allowEmpty: true,
+    group: "connect",
+    voice: /^(indexer?|indexe)(\s+(ce\s+)?dossier)?\b/,
+    promptMatch: /\b(indexer|indexe)\s+(ce\s+)?dossier\b/i,
+    emptyMessage: "Ce dossier ne contient aucune note à indexer.",
   },
   {
     id: "enrich",

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke } from "$lib/tauri/api";
 
   export interface NoteHistoryEntry {
     id: string;
