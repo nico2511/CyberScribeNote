@@ -31,6 +31,7 @@ import { notify } from "$lib/stores/notifications";
 import type { AiAction, VaultEntry } from "$lib/types";
 import { replaceTextRange, type AiActionRequest, type TextSelection } from "$lib/voice/commands";
 import { formatRelatedAppendix } from "$lib/app/relatedAppendix";
+import { runFolderIndexSkill } from "$lib/app/folderIndexSkill";
 
 export type AiOrchestratorDeps = {
   content: string;
@@ -277,6 +278,10 @@ export async function runAiAction(deps: AiOrchestratorDeps, request: AiActionReq
 }
 
 export async function runSkill(deps: AiOrchestratorDeps, id: SkillId): Promise<void> {
+  if (id === "folderIndex") {
+    await runFolderIndexSkill(deps);
+    return;
+  }
   if (!deps.selectedPath) return;
   const skill = getSkill(id);
   const pathAtStart = deps.selectedPath;

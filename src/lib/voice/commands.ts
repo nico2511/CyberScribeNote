@@ -25,6 +25,12 @@ export const VOICE_COMMANDS: VoiceCommandInfo[] = [
     requiresNote: true,
   },
   {
+    phrase: "Scribe, indexe dossier",
+    description: "Génère ou met à jour sommaire.md dans le dossier de la note",
+    category: "ia",
+    requiresNote: true,
+  },
+  {
     phrase: "Scribe, plan",
     description: "Propose un plan de conception en fin de note (n'écrase rien)",
     category: "ia",

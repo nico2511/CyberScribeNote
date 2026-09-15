@@ -74,7 +74,7 @@ P0 / P1 / P2 **terminés**. Il ne reste que du **P3 optionnel** (NSIS, Authentic
 5. Valider manuellement migration historique legacy + reindex RAG sur un vrai vault
 
 ### Produit (roadmap README / plan)
-1. Skill « indexer ce dossier → `sommaire.md` »
+1. ~~Skill « indexer ce dossier → `sommaire.md` »~~ — skill **Indexer dossier** (companion + voix « indexe dossier »)
 2. Templates de notes + graph simple
 3. Auto-suggestions plus intelligentes / RAG abouti
 4. Bundling NSIS + updater Tauri (+ signature Authenticode)

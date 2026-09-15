@@ -28,6 +28,7 @@ describe("matchSkillFromText", () => {
     expect(matchSkillFromText("lien")).toBe("enrich");
     expect(matchSkillFromText("template")).toBe("template");
     expect(matchSkillFromText("liees")).toBe("related");
+    expect(matchSkillFromText("indexe dossier")).toBe("folderIndex");
     expect(matchSkillFromText("points cles")).toBe("keypoints");
   });
 
