@@ -1,5 +1,4 @@
 import { invoke } from "$lib/tauri/api";
-import { getSkill } from "$lib/ai/skills";
 import {
   buildFolderSommaireMarkdown,
   findVaultEntry,
@@ -21,7 +20,6 @@ function folderEntryForPath(entries: VaultEntry[], folderPath: string): VaultEnt
 
 /** Crée ou met à jour `sommaire.md` dans le dossier de la note courante. */
 export async function runFolderIndexSkill(deps: AiOrchestratorDeps): Promise<void> {
-  const skill = getSkill("folderIndex");
   if (!deps.selectedPath) {
     deps.setStatus("Ouvrez une note pour indexer son dossier.");
     return;
@@ -35,10 +33,6 @@ export async function runFolderIndexSkill(deps: AiOrchestratorDeps): Promise<voi
   }
 
   const markdown = buildFolderSommaireMarkdown(folderPath, entry);
-  if (!markdown) {
-    deps.setStatus(skill.emptyMessage);
-    return;
-  }
 
   const targetPath = sommairePathForFolder(folderPath);
   deps.setStatus("Indexation du dossier…");

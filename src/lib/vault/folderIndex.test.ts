@@ -46,8 +46,9 @@ describe("folderIndex", () => {
     expect(md).toContain("1 note");
   });
 
-  it("returns null for empty folder", () => {
+  it("builds empty placeholder for folder without notes", () => {
     const empty: VaultEntry = { name: "vide", path: "vide", isDir: true, children: [] };
-    expect(buildFolderSommaireMarkdown("vide", empty)).toBeNull();
+    const md = buildFolderSommaireMarkdown("vide", empty);
+    expect(md).toContain("Aucune note dans ce dossier");
   });
 });

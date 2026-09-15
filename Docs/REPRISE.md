@@ -19,7 +19,7 @@ npm install
 
 ### Prérequis dev
 - Node.js 18+
-- Rust (rustup)
+- Rust (rustup) — sur Linux : libs Tauri (`libwebkit2gtk-4.1-dev`, `libayatana-appindicator3-dev`, `librsvg2-dev`, `patchelf`) pour `cargo test`
 - Python 3.10+ (voix en mode Python, ou pour builder le sidecar)
 - Ollama (optionnel, IA / RAG)
 - [GitHub CLI `gh`](https://cli.github.com/) si tu publies des releases

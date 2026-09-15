@@ -9,11 +9,13 @@ export const searchSession = $state({
 });
 
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
+let searchSeq = 0;
 
 export function openSearchPanel(): void {
   searchSession.open = true;
   searchSession.query = "";
   searchSession.results = [];
+  searchSession.loading = false;
 }
 
 export function closeSearchPanel(): void {
@@ -24,15 +26,23 @@ export async function runVaultSearch(q: string): Promise<void> {
   searchSession.query = q;
   if (searchTimer) clearTimeout(searchTimer);
   if (!q.trim()) {
+    searchSeq += 1;
     searchSession.results = [];
+    searchSession.loading = false;
     return;
   }
+  const seq = ++searchSeq;
   searchSession.loading = true;
+  const query = q.trim();
   searchTimer = setTimeout(async () => {
     try {
-      searchSession.results = await invoke<SearchResult[]>("search_vault", { query: q });
+      const results = await invoke<SearchResult[]>("search_vault", { query });
+      if (seq !== searchSeq) return;
+      searchSession.results = results;
     } finally {
-      searchSession.loading = false;
+      if (seq === searchSeq) {
+        searchSession.loading = false;
+      }
     }
   }, 200);
 }

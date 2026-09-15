@@ -49,7 +49,9 @@ export function buildFolderSommaireMarkdown(folderPath: string, entry: VaultEntr
     }
   }
 
-  if (notes.length === 0 && subdirs.length === 0) return null;
+  if (notes.length === 0 && subdirs.length === 0) {
+    return buildEmptyFolderSommaire(folderPath);
+  }
 
   notes.sort((a, b) => noteStem(a).localeCompare(noteStem(b), "fr"));
   subdirs.sort((a, b) => a.label.localeCompare(b.label, "fr"));
@@ -80,4 +82,10 @@ export function buildFolderSommaireMarkdown(folderPath: string, entry: VaultEntr
   }
 
   return `${lines.join("\n").trimEnd()}\n`;
+}
+
+/** Sommaire minimal quand le dossier n'a plus de notes indexables. */
+export function buildEmptyFolderSommaire(folderPath: string): string {
+  const folderLabel = folderPath ? vaultItemName(folderPath) : "Racine";
+  return `# Sommaire · ${folderLabel}\n\n> Aucune note dans ce dossier (index CyberScribe).\n\n`;
 }
