@@ -67,8 +67,8 @@ P0 / P1 / P2 **terminés**. Il ne reste que du **P3 optionnel** (NSIS, Authentic
 ## 3. Prochaines actions (priorisées)
 
 ### Dette technique (recommandé avant grosses features)
-1. Continuer à alléger `src/routes/+page.svelte` (~1140 lignes) — extraire listeners voix / onMount
-2. Tests stores : `aiQueue` + `ollamaSession` OK ; reste `noteSession` / `voiceSession`
+1. Alléger encore `+page.svelte` (~1040 lignes) — handlers vault/import optionnels
+2. Tests stores : `noteSession` + `voiceSession` OK
 3. CI : job `windows-smoke` + couverture Vitest ; `tauri build` Windows encore manuel
 4. Valider manuellement migration historique legacy + reindex RAG sur un vrai vault
 

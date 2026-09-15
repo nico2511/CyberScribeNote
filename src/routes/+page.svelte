@@ -1,7 +1,9 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { invoke } from "$lib/tauri/api";
-  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+  import type { UnlistenFn } from "@tauri-apps/api/event";
+  import { registerVoiceListeners, type VoiceCrashState } from "$lib/app/voiceListeners";
+  import { resolveFirstRunUi } from "$lib/app/appBootstrap";
   import { save, open } from "@tauri-apps/plugin-dialog";
   import Sidebar from "$lib/components/Sidebar.svelte";
   import MarkdownEditor from "$lib/components/MarkdownEditor.svelte";
@@ -116,7 +118,7 @@
     runCustomPrompt,
     aiOrchestratorDepsFromPage,
   } from "$lib/app/aiOrchestrator";
-  import type { ThemeMode, VoiceTranscript } from "$lib/types";
+  import type { ThemeMode } from "$lib/types";
 
   let theme = $state<ThemeMode>("light");
   let settingsOpen = $state(false);
@@ -157,8 +159,7 @@
   );
   let editorHighlight = $derived(editorHighlightFromSuggestions());
 
-  let voiceCrashRestarts = 0;
-  let voiceCrashWindowStart = 0;
+  const voiceCrash: VoiceCrashState = { restarts: 0, windowStart: 0 };
   let noteScanTimer: ReturnType<typeof setTimeout> | null = null;
   let fullTypoScanTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -737,112 +738,21 @@
     await refreshVoice();
 
     unlisteners.push(
-      await listen<VoiceTranscript>("voice-transcript", (event) => {
-        handleVoiceTranscript(event.payload.text);
-      }),
-      await listen("voice-event", async (event) => {
-        await refreshVoice();
-        const payload = event.payload as {
-          type?: string;
-          message?: string;
-          active?: boolean;
-          loading?: boolean;
-          loaded?: boolean;
-        };
-        if (payload?.type === "error" && payload.message) {
-          const soft =
-            payload.message.includes("Transcription encore") ||
-            payload.message.includes("automatiquement");
-          statusMessage = `Voix : ${payload.message}`;
-          if (!soft) {
-            notify({
-              kind: "error",
-              title: "Erreur vocale",
-              message: payload.message,
-              key: `voice-error:${payload.message}`,
-            });
-          } else {
-            notify({
-              kind: "warning",
-              title: "Voix",
-              message: payload.message,
-              key: "voice-soft",
-            });
-          }
-        }
-        if (payload?.type === "transcript") {
-          // statut rafraîchi ci-dessus
-        }
-      }),
-      await listen("voice-worker-stopped", async (event) => {
-        await refreshVoice();
-        const payload = (event.payload ?? {}) as { message?: string; exitCode?: number | null };
-        const detail =
-          payload.message?.trim() ||
-          "Worker vocal arrêté. Réglages → Voix → « Appliquer la config voix » pour le relancer.";
-        statusMessage = detail;
-        notify({
-          kind: "error",
-          title: "Worker vocal arrêté",
-          message: detail,
-          key: "voice-stopped",
-          durationMs: 16000,
-        });
-
-        const now = Date.now();
-        if (now - voiceCrashWindowStart > 60_000) {
-          voiceCrashWindowStart = now;
-          voiceCrashRestarts = 0;
-        }
-        if (voiceCrashRestarts >= 1) {
-          notify({
-            kind: "warning",
-            title: "Voix bloquée",
-            message:
-              "Relance auto arrêtée. Réglages → Voix → « Appliquer la config voix ». Logs : Documents/CyberScribeNote/voice_worker.log",
-            key: "voice-blocked",
-            durationMs: 20000,
-          });
-          return;
-        }
-        voiceCrashRestarts += 1;
-
-        try {
-          await invoke("voice_restart", { force: true });
-          await invoke("voice_preload_whisper_model");
-          notify({
-            kind: "info",
-            title: "Worker vocal relancé",
-            message: "Attendez le chargement du modèle Whisper avant de dicter.",
-            key: "voice-restart",
-          });
-          await refreshVoice();
-        } catch (e) {
-          notify({
-            kind: "error",
-            title: "Relance impossible",
-            message: String(e),
-            key: "voice-restart-fail",
-          });
-        }
-      }),
+      ...(await registerVoiceListeners(
+        {
+          onTranscript: handleVoiceTranscript,
+          setStatus: (msg) => {
+            statusMessage = msg;
+          },
+          refreshVoice,
+        },
+        voiceCrash,
+      )),
     );
 
-    // Premier lancement : check-up Ollama. Les utilisateurs existants (splash déjà
-    // dismissé) ne sont pas ré-interrogés.
-    try {
-      const setupDone = localStorage.getItem("csn-setup-done") === "1";
-      const splashDismissed = localStorage.getItem("csn-splash-dismissed") === "1";
-      if (!setupDone && !splashDismissed) {
-        setupOpen = true;
-        splashOpen = false;
-      } else {
-        if (!setupDone) localStorage.setItem("csn-setup-done", "1");
-        splashOpen = !splashDismissed;
-      }
-    } catch {
-      setupOpen = true;
-    }
+    const firstRun = resolveFirstRunUi();
+    setupOpen = firstRun.setupOpen;
+    splashOpen = firstRun.splashOpen;
   });
 
   onDestroy(() => {

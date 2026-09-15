@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "$lib/tauri/api";
 import type { RagHit } from "$lib/types";
 
 export type { RagHit, RagStatus } from "$lib/types";
