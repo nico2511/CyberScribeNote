@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "$lib/tauri/api";
 import { ensureVisibleContextBlock, touchUpdatedDate } from "$lib/note/frontmatter";
 import { repairCorruptedWikilinkMarkdown } from "$lib/markdown/bridge";
 

@@ -243,7 +243,7 @@ pub async fn fetch_page_meta(url: String) -> Result<PageMeta, String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(18))
         .redirect(safe_redirect_policy())
-        .user_agent("CyberScribeNote/0.4 (+local note assistant)")
+        .user_agent("CyberScribeNote/0.5.4 (+local note assistant)")
         .build()
         .map_err(|e| e.to_string())?;
 

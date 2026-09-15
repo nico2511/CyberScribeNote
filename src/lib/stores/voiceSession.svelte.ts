@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "$lib/tauri/api";
 import type { VoiceStatus } from "$lib/types";
 import { notify } from "$lib/stores/notifications";
 

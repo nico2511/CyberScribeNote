@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke } from "$lib/tauri/api";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { save, open } from "@tauri-apps/plugin-dialog";
   import Sidebar from "$lib/components/Sidebar.svelte";
@@ -44,18 +44,7 @@
     translateLangLabel,
   } from "$lib/ai/languages";
   import { fetchRagContext } from "$lib/ai/rag";
-  import { repairMarkdownProposal } from "$lib/markdown/repair";
-  import {
-    getSkill,
-    runSkillLocal,
-    isEmptyLlmAppendix,
-    parseTagsProposal,
-    formatEnrichContext,
-    extractUrls,
-    type SkillId,
-  } from "$lib/ai/skills";
-  import { isLinkOnlyNote } from "$lib/ai/links";
-  import { instructionWantsVaultContext, isGroundedAppendix, isGroundedTransform } from "$lib/ai/grounding";
+  import { getSkill, parseTagsProposal, type SkillId } from "$lib/ai/skills";
   import {
     scanBuddyTip,
     moodFromActivity,
@@ -98,28 +87,41 @@
     stillCurrentAiRequest,
     resetAiQueue,
   } from "$lib/stores/aiQueue.svelte";
+  import {
+    ollamaSession,
+    ensureOllamaRunning as ensureOllamaCore,
+    activeOllamaModel,
+  } from "$lib/stores/ollamaSession.svelte";
+  import {
+    vaultStore,
+    refreshVault,
+    createNote as createVaultNote,
+    createFolder as createVaultFolder,
+    deleteVaultItem,
+    renameVaultNote,
+    moveVaultItem,
+  } from "$lib/stores/vaultStore.svelte";
+  import {
+    runAiAction,
+    runSkill,
+    runCustomPrompt,
+    aiOrchestratorDepsFromPage,
+  } from "$lib/app/aiOrchestrator";
   import type {
     AiAction,
-    OllamaStatus,
-    OllamaDetect,
     SearchResult,
     ThemeMode,
-    VaultEntry,
     VoiceTranscript,
     AiSuggestion,
     ProactiveSuggestionResponse,
   } from "$lib/types";
 
-  let entries = $state<VaultEntry[]>([]);
-  let vaultPath = $state("");
   let theme = $state<ThemeMode>("light");
   let searchOpen = $state(false);
   let settingsOpen = $state(false);
   let splashOpen = $state(false);
   let setupOpen = $state(false);
   let historyOpen = $state(false);
-  let txtSyncEnabled = $state(true);
-
   $effect(() => {
     noteSession.selectedPath;
     historyOpen = false;
@@ -128,14 +130,6 @@
   let searchQuery = $state("");
   let searchResults = $state<SearchResult[]>([]);
   let searchLoading = $state(false);
-  let ollamaStatus = $state<OllamaStatus>({
-    available: false,
-    models: [],
-    host: "http://127.0.0.1:11434",
-    selectedModel: "llama3.2",
-    networkMode: "local",
-    isLocalhost: true,
-  });
   let proactiveEnabled = $state(false);
   let autoTypoFixEnabled = $state(true);
   let autoSummarizeEnabled = $state(false);
@@ -170,7 +164,7 @@
     return name.replace(/\.md$/, "");
   });
 
-  let activeModel = $derived(ollamaStatus.selectedModel || ollamaStatus.models[0] || "llama3.2");
+  let activeModel = $derived(activeOllamaModel());
   let noteContext = $derived(parseNoteContext(noteSession.content));
   let customPromptTargetLabel = $derived.by(() =>
     editorSelection
@@ -245,7 +239,7 @@
 
     autoTypoFixBusy = true;
     try {
-      if (!ollamaStatus.available) {
+      if (!ollamaSession.status.available) {
         const ok = await ensureOllamaRunning(true);
         if (!ok) return false;
       }
@@ -460,7 +454,7 @@
           notify({ kind: "warning", title: "Scribe", message: msg, key: "voice-cmd" });
           return;
         }
-        if (!ollamaStatus.available && parsed.action !== "correct") {
+        if (!ollamaSession.status.available && parsed.action !== "correct") {
           const ok = await ensureOllamaRunning(true);
           if (!ok) {
             const msg = "Ollama hors ligne — impossible d'exécuter la commande IA.";
@@ -526,7 +520,7 @@
   }
 
   async function openNoteByQuery(query: string) {
-    const match = resolveWikilink(query, entries);
+    const match = resolveWikilink(query, vaultStore.entries);
     if (!match) {
       const msg = `Aucune note trouvée pour « ${query} ».`;
       statusMessage = msg;
@@ -549,51 +543,39 @@
     void openNoteByQuery(title);
   }
 
-  async function refreshOllama() {
-    ollamaStatus = await invoke<OllamaStatus>("ollama_status");
+  async function ensureOllamaRunning(silent = false) {
+    return ensureOllamaCore(silent, (msg) => {
+      statusMessage = msg;
+    });
   }
 
-  async function ensureOllamaRunning(silent = false) {
-    await refreshOllama();
-    if (ollamaStatus.available) return true;
-
-    try {
-      const detect = await invoke<OllamaDetect>("ollama_detect");
-      if (!detect.cliInstalled && !detect.serviceRunning) {
-        try {
-          await invoke<string>("ollama_start_service");
-        } catch {
-          return false;
-        }
-      } else if (!detect.serviceRunning) {
-        await invoke<string>("ollama_start_service");
-      }
-
-      if (!silent) {
-        statusMessage = "Démarrage d'Ollama…";
-      }
-
-      for (const delay of [2500, 3500, 5000]) {
-        await new Promise((r) => setTimeout(r, delay));
-        await refreshOllama();
-        if (ollamaStatus.available) {
-          if (!silent) {
-            statusMessage = "Ollama connecté.";
-          }
-          return true;
-        }
-      }
-    } catch (e) {
-      if (!silent) {
-        statusMessage = String(e);
-      }
-    }
-
-    return ollamaStatus.available;
+  function aiDeps() {
+    return aiOrchestratorDepsFromPage({
+      content: noteSession.content,
+      selectedPath: noteSession.selectedPath,
+      noteContext: noteContext,
+      editorSelection,
+      ollamaAvailable: ollamaSession.status.available,
+      activeModel,
+      entries: vaultStore.entries,
+      ensureOllamaRunning,
+      openSettings,
+      setStatus: (msg) => {
+        statusMessage = msg;
+      },
+      onContentChange: handleContentChange,
+      setEditorCursor: (n) => {
+        editorCursor = n;
+      },
+      setLastCaretOffset: (n) => {
+        lastCaretOffset = n;
+      },
+      silenceAiHelpers,
+    });
   }
 
   async function handleOllamaHeaderClick() {
-    if (ollamaStatus.available) {
+    if (ollamaSession.status.available) {
       openSettings();
       return;
     }
@@ -602,31 +584,6 @@
       openSettings();
       statusMessage = "Ollama hors ligne — lancez-le ou installez-le dans Réglages.";
     }
-  }
-
-  async function refreshVault() {
-    vaultPath = await invoke<string>("init_vault");
-    try {
-      const cfg = await invoke<{ txtSyncEnabled?: boolean }>("get_app_config");
-      txtSyncEnabled = cfg.txtSyncEnabled !== false;
-      if (txtSyncEnabled) {
-        const created = await invoke<string[]>("sync_txt_notes");
-        if (created.length) {
-          notify({
-            kind: "info",
-            title: "TXT → Markdown",
-            message:
-              created.length === 1
-                ? `Converti en .md (source .txt supprimée) : ${created[0]}`
-                : `${created.length} fichiers .txt convertis en .md (sources .txt supprimées)`,
-            key: "txt-sync",
-          });
-        }
-      }
-    } catch {
-      /* sync optionnel */
-    }
-    entries = await invoke<VaultEntry[]>("list_vault");
   }
 
   async function loadNote(path: string) {
@@ -809,7 +766,7 @@
     if (key === lastAutoSummaryKey) return;
     if (aiQueue.aiLoading || aiQueue.proactiveLoading) return;
 
-    if (!ollamaStatus.available) {
+    if (!ollamaSession.status.available) {
       const ok = await ensureOllamaRunning(true);
       if (!ok) return;
     }
@@ -876,16 +833,14 @@
   async function handleCreateNote(parentPath: string) {
     const name = prompt("Nom de la note :");
     if (!name?.trim()) return;
-    const path = await invoke<string>("create_note", { parentPath, name: name.trim() });
-    await refreshVault();
+    const path = await createVaultNote(parentPath, name.trim());
     await loadNote(path);
   }
 
   async function handleCreateFolder(parentPath: string) {
     const name = prompt("Nom du dossier :");
     if (!name?.trim()) return;
-    await invoke("create_folder", { parentPath, name: name.trim() });
-    await refreshVault();
+    await createVaultFolder(parentPath, name.trim());
   }
 
   async function handleDelete(path: string) {
@@ -899,21 +854,12 @@
       ) {
         return;
       }
-    } else if (
-      !confirm(`Supprimer le dossier vide « ${label} » ?`)
-    ) {
+    } else if (!confirm(`Supprimer le dossier vide « ${label} » ?`)) {
       return;
     }
     try {
-      await invoke("delete_item", { relativePath: path });
-      if (noteSession.selectedPath === path) {
-        noteSession.selectedPath = null;
-        noteSession.content = "";
-        noteSession.savedContent = "";
-        noteSession.dirty = false;
-      }
-      await refreshVault();
-      statusMessage = isNote ? `Note « ${label} » supprimée` : `Dossier « ${label} » supprimé`;
+      const result = await deleteVaultItem(path);
+      statusMessage = result.isNote ? `Note « ${result.label} » supprimée` : `Dossier « ${result.label} » supprimé`;
     } catch (e) {
       statusMessage = String(e);
       notify({ kind: "error", title: "Suppression impossible", message: String(e), key: "vault-delete" });
@@ -925,14 +871,7 @@
     const name = prompt("Nouveau nom de la note :", current);
     if (!name?.trim() || name.trim() === current) return;
     try {
-      const newPath = await invoke<string>("rename_note", {
-        relativePath: path,
-        newName: name.trim(),
-      });
-      if (noteSession.selectedPath === path) {
-        noteSession.selectedPath = newPath;
-      }
-      await refreshVault();
+      await renameVaultNote(path, name.trim());
       statusMessage = `Note renommée : ${name.trim()}`;
       notify({ kind: "success", title: "Renommage", message: statusMessage, key: "vault-rename" });
     } catch (e) {
@@ -943,18 +882,7 @@
 
   async function handleMove(sourcePath: string, destinationParent: string) {
     try {
-      const newPath = await invoke<string>("move_vault_item", {
-        relativePath: sourcePath,
-        destinationParent,
-      });
-
-      if (noteSession.selectedPath === sourcePath) {
-        noteSession.selectedPath = newPath;
-      } else if (noteSession.selectedPath?.startsWith(`${sourcePath}/`)) {
-        noteSession.selectedPath = `${newPath}${noteSession.selectedPath.slice(sourcePath.length)}`;
-      }
-
-      await refreshVault();
+      await moveVaultItem(sourcePath, destinationParent);
       const msg = destinationParent
         ? `Déplacé dans « ${destinationParent} »`
         : "Déplacé à la racine du vault";
@@ -967,551 +895,17 @@
   }
 
   async function handleAiAction(request: AiActionRequest) {
-    const { action, selection: rawSel, translateTo } = request;
-    const located = rawSel ? locateSelectionInContent(noteSession.content, rawSel) : null;
-    const sel = rawSel && located
-      ? { ...rawSel, start: located.start, end: located.end }
-      : rawSel && rawSel.text
-        ? rawSel
-        : undefined;
-    // Si une sélection était demandée mais introuvable → ne pas traduire toute la note par erreur
-    if (rawSel?.text && !located && (action === "translate" || action === "reformulate" || action === "correct")) {
-      const msg =
-        "Sélection introuvable dans la note — resélectionnez le passage puis relancez l'action.";
-      statusMessage = msg;
-      notify({ kind: "warning", title: "Sélection", message: msg, key: "ai-sel" });
-      return;
-    }
-    const fullNote = !sel;
-    const targetText = sel?.text ?? noteBody(noteSession.content);
-    if (!targetText.trim()) {
-      const msg = "La note est vide — rien à transformer.";
-      statusMessage = msg;
-      notify({ kind: "warning", title: "IA", message: msg, key: "ai-empty" });
-      return;
-    }
-
-    const epoch = noteSession.aiEpoch;
-    const pathAtStart = noteSession.selectedPath;
-
-    if (!ollamaStatus.available && action !== "correct") {
-      const started = await ensureOllamaRunning(true);
-      if (!started) {
-        settingsOpen = true;
-        statusMessage = "Configurez ou démarrez Ollama dans les réglages.";
-        return;
-      }
-    }
-
-    aiQueue.aiLoading = true;
-    aiQueue.companionOpen = true;
-    const lang = translateTo ?? "en";
-    const labels: Record<AiAction, string> = {
-      summarize: "Résumé",
-      reformulate: "Reformulation",
-      correct: "Correction",
-      translate: `Traduction (${translateLangLabel(lang)})`,
-      custom: "Prompt custom",
-    };
-    const scope =
-      action === "summarize"
-        ? "à ajouter en fin de note"
-        : sel
-          ? "sélection"
-          : "note";
-    statusMessage = `${labels[action]} (${scope}) — suggestion en cours…`;
-
-    const stillCurrent = () => stillCurrentAiRequest(epoch, pathAtStart);
-
-    try {
-      let result = "";
-      const ctx = noteContext.trim() || null;
-      const wantsRag = action === "summarize";
-      const ragContext = wantsRag
-        ? await fetchRagContext(targetText.slice(0, 800), pathAtStart)
-        : "";
-
-      if (!stillCurrent()) return;
-
-      if (action === "correct" && !ollamaStatus.available) {
-        result = "";
-      } else if (action === "summarize") {
-        result = await invoke<string>("ollama_summarize_note", {
-          content: targetText,
-          model: activeModel,
-          noteContext: ctx,
-          ragContext: ragContext || null,
-        });
-      } else if (action === "translate") {
-        result = await invoke<string>("ollama_transform_note", {
-          action: "translate",
-          content: targetText,
-          model: activeModel,
-          noteContext: ctx,
-          targetLanguage: translateLangLabel(lang).toLowerCase(),
-          ragContext: null,
-        });
-      } else {
-        result = await invoke<string>("ollama_transform_note", {
-          action,
-          content: targetText,
-          model: activeModel,
-          noteContext: action === "correct" ? null : ctx,
-          targetLanguage: null,
-          ragContext: null,
-        });
-      }
-
-      if (!stillCurrent()) return;
-
-      const proposal = buildAiProposal(action, targetText, result);
-      if (!proposal && action === "correct") {
-        const localOnly = buildLocalCorrection(targetText);
-        if (localOnly && hasMeaningfulDiff(targetText, localOnly)) {
-          pushSuggestion({
-            action,
-            label: labels[action],
-            scope,
-            proposedText: localOnly,
-            originalText: targetText,
-            source: "manual",
-            notePath: pathAtStart ?? undefined,
-            selection: sel ? { start: sel.start, end: sel.end, text: sel.text } : undefined,
-          });
-          statusMessage = "Correction locale proposée.";
-          return;
-        }
-      }
-
-      if (!proposal) {
-        statusMessage =
-          action === "correct"
-            ? "Aucune correction trouvée pour ce passage."
-            : action === "reformulate"
-              ? "L'IA a dérivé du contenu — proposition rejetée. Réessayez."
-              : "Réponse IA vide — réessayez.";
-        return;
-      }
-
-      if (action === "summarize") {
-        if (isDuplicateSummary(extractExistingSummary(noteSession.content), proposal)) {
-          statusMessage = "Ce résumé est déjà présent dans la note.";
-          return;
-        }
-      }
-
-      if (
-        (action === "translate" || action === "reformulate") &&
-        !hasMeaningfulDiff(targetText, proposal)
-      ) {
-        statusMessage = "La proposition est identique au texte actuel.";
-        return;
-      }
-
-      const isSummary = action === "summarize";
-
-      // Traduction sélection : appliquer tout de suite + silence des helpers auto
-      if (!isSummary && action === "translate" && sel) {
-        const range = locateSelectionInContent(noteSession.content, sel) ?? {
-          start: sel.start,
-          end: sel.end,
-        };
-        const next = replaceTextRange(noteSession.content, range.start, range.end, proposal);
-        silenceAiHelpers(120000);
-        handleContentChange(next);
-        editorCursor = range.start + proposal.length;
-        lastCaretOffset = range.start + proposal.length;
-        aiQueue.companionOpen = true;
-        statusMessage = `${labels[action]} appliquée à la sélection.`;
-        notify({
-          kind: "success",
-          title: "Traduction",
-          message: `Sélection traduite (${proposal.length} car.)`,
-          key: "ai-translate",
-        });
-        return;
-      }
-
-      // Traduction / reformulation / correction sur toute la note : appliquer tout de suite
-      if (
-        fullNote &&
-        !isSummary &&
-        (action === "translate" || action === "reformulate" || action === "correct")
-      ) {
-        const next = mergeBodyMarkdown(noteSession.content, proposal.trim() + "\n");
-        silenceAiHelpers(action === "translate" ? 120000 : 90000);
-        handleContentChange(next);
-        editorCursor = Math.min(next.length, Math.max(1, proposal.length));
-        aiQueue.companionOpen = true;
-        statusMessage = `${labels[action]} appliquée à la note.`;
-        return;
-      }
-
-      if (!isSummary && (action === "reformulate" || action === "correct") && sel) {
-        silenceAiHelpers(60000);
-      }
-
-      pushSuggestion({
-        action,
-        label: labels[action],
-        scope,
-        proposedText: proposal,
-        originalText: isSummary ? "" : targetText,
-        source: "manual",
-        notePath: pathAtStart ?? undefined,
-        applyMode: isSummary ? "append" : "replace",
-        reason: isSummary
-          ? "Sera ajouté en fin de note (complément)"
-          : undefined,
-        selection:
-          isSummary || !sel
-            ? undefined
-            : { start: sel.start, end: sel.end, text: sel.text },
-      });
-      statusMessage = isSummary
-        ? "Résumé prêt — appliquez pour l'ajouter en fin de note."
-        : `Suggestion « ${labels[action]} » prête — cliquez « Appliquer » dans le Compagnon.`;
-    } catch (e) {
-      if (!stillCurrent()) return;
-      if (action === "correct") {
-        const proposal = buildAiProposal("correct", targetText, "");
-        if (proposal) {
-          pushSuggestion({
-            action,
-            label: labels[action],
-            scope,
-            proposedText: proposal,
-            originalText: targetText,
-            source: "manual",
-            notePath: pathAtStart ?? undefined,
-            selection: sel ? { start: sel.start, end: sel.end, text: sel.text } : undefined,
-          });
-          statusMessage = "Correction locale proposée.";
-          return;
-        }
-      }
-      statusMessage = `Erreur IA : ${e}`;
-    } finally {
-      aiQueue.aiLoading = false;
-    }
+    await runAiAction(aiDeps(), request);
   }
 
   async function handleSkill(id: SkillId) {
-    if (!noteSession.selectedPath) return;
-    const skill = getSkill(id);
-    const pathAtStart = noteSession.selectedPath;
-    const epoch = noteSession.aiEpoch;
-    const targetText = editorSelection?.text ?? noteBody(noteSession.content);
-    if (!targetText.trim() && !skill.allowEmpty) {
-      statusMessage = "La note est vide — rien à concevoir.";
-      return;
-    }
-
-    aiQueue.companionOpen = true;
-    const titles = flattenNotes(entries).map((e) => noteStem(e.path));
-
-    // Related : RAG local → annexe
-    if (id === "related") {
-      aiQueue.aiLoading = true;
-      statusMessage = "Notes liées — recherche…";
-      try {
-        const rag = await fetchRagContext(targetText.slice(0, 800) || titles.join(" "), pathAtStart);
-        if (!stillCurrentAiRequest(epoch, pathAtStart)) return;
-        const local = runSkillLocal("related", targetText, { ragBlock: formatRelatedAppendix(rag) });
-        if (!local) {
-          statusMessage = skill.emptyMessage;
-          return;
-        }
-        pushSuggestion({
-          action: "custom",
-          skillId: id,
-          label: skill.label,
-          scope: "à ajouter en fin de note",
-          proposedText: local.proposed,
-          originalText: "",
-          source: "manual",
-          notePath: pathAtStart,
-          applyMode: "append",
-          reason: local.reason,
-        });
-        statusMessage = `${skill.label} prêt — appliquez ou ignorez.`;
-      } catch (e) {
-        statusMessage = `Notes liées indisponibles : ${e}`;
-      } finally {
-        aiQueue.aiLoading = false;
-      }
-      return;
-    }
-
-    // Structurer : Ollama prioritaire. Locaux (sommaire, template, wikiliens) d'abord.
-    const preferLocal =
-      !skill.needsLlm || (skill.id === "structure" && !ollamaStatus.available);
-    const local = preferLocal
-      ? runSkillLocal(id, targetText, {
-          titles,
-          currentTitle: noteStem(pathAtStart),
-          noteContext: noteContext.trim(),
-        })
-      : skill.id === "structure"
-        ? null
-        : runSkillLocal(id, targetText, {
-            titles,
-            currentTitle: noteStem(pathAtStart),
-            noteContext: noteContext.trim(),
-          });
-    if (local) {
-      const mode = local.applyMode ?? skill.applyMode;
-      pushSuggestion({
-        action: "custom",
-        skillId: id,
-        label: skill.label,
-        scope: mode === "append" ? "à ajouter en fin de note" : editorSelection?.text ? "sélection" : "note",
-        proposedText: local.proposed,
-        originalText: mode === "append" || mode === "tags" ? "" : targetText,
-        source: "manual",
-        notePath: pathAtStart,
-        applyMode: mode === "tags" ? "tags" : mode,
-        reason: local.reason,
-        selection:
-          mode === "replace" && editorSelection
-            ? {
-                start: editorSelection.start,
-                end: editorSelection.end,
-                text: editorSelection.text,
-              }
-            : undefined,
-      });
-      statusMessage = `${skill.label} prêt — appliquez ou ignorez.`;
-      return;
-    }
-
-    if (!skill.needsLlm || !skill.llmInstruction) {
-      statusMessage = skill.emptyMessage;
-      return;
-    }
-
-    if (!ollamaStatus.available) {
-      const started = await ensureOllamaRunning(true);
-      if (!started) {
-        settingsOpen = true;
-        statusMessage = "Configurez ou démarrez Ollama dans les réglages.";
-        return;
-      }
-    }
-
-    aiQueue.aiLoading = true;
-    statusMessage = `${skill.label} — en cours…`;
-    try {
-      let promptContent = targetText;
-      if (skill.needsUrlFetch) {
-        const urls = extractUrls(targetText);
-        if (!urls.length) {
-          statusMessage = skill.emptyMessage;
-          return;
-        }
-        const meta = await invoke<{
-          url: string;
-          title: string;
-          description: string;
-          siteName?: string | null;
-          excerpt?: string | null;
-        }>("fetch_page_meta", { url: urls[0] });
-        if (!stillCurrentAiRequest(epoch, pathAtStart)) return;
-        promptContent = formatEnrichContext(meta);
-      }
-
-      const ragContext =
-        skill.wantsRag
-          ? (await fetchRagContext(targetText.slice(0, 800), pathAtStart)) || null
-          : null;
-
-      const result = await invoke<string>("ollama_custom_prompt", {
-        instruction: skill.llmInstruction,
-        content: promptContent,
-        model: activeModel,
-        noteContext: noteContext.trim() || null,
-        ragContext,
-      });
-      if (!stillCurrentAiRequest(epoch, pathAtStart)) return;
-
-      let cleaned = sanitizeAiOutput(result, "custom");
-      if (skill.applyMode === "tags") {
-        const tags = parseTagsProposal(cleaned);
-        if (!tags.length) {
-          statusMessage = skill.emptyMessage;
-          return;
-        }
-        pushSuggestion({
-          action: "custom",
-          skillId: id,
-          label: skill.label,
-          scope: "frontmatter",
-          proposedText: `tags: ${tags.join(", ")}`,
-          originalText: "",
-          source: "manual",
-          notePath: pathAtStart,
-          applyMode: "tags",
-          reason: `Tags proposés : ${tags.join(", ")}`,
-        });
-        statusMessage = `${skill.label} prêt — appliquez ou ignorez.`;
-        return;
-      }
-
-      // Enrich : toujours en append (ne jamais écraser la note).
-      // Remplacement uniquement si la note entière n'est qu'un lien.
-      if (skill.id === "enrich") {
-        const fullBody = noteBody(noteSession.content);
-        const linkOnly = isLinkOnlyNote(fullBody) && !editorSelection;
-        const mode = linkOnly ? "replace" : "append";
-        const proposed =
-          mode === "append" && !/^##\s+/.test(cleaned.trim())
-            ? `## Lien enrichi\n\n${cleaned.trim()}`
-            : cleaned.trim();
-        pushSuggestion({
-          action: "custom",
-          skillId: id,
-          label: skill.label,
-          scope: mode === "append" ? "à ajouter en fin de note" : "note (lien seul)",
-          proposedText: proposed,
-          originalText: mode === "append" ? "" : fullBody,
-          source: "manual",
-          notePath: pathAtStart,
-          applyMode: mode,
-          reason: skill.hint,
-        });
-        statusMessage = `${skill.label} prêt — ${mode === "append" ? "sera ajouté en fin" : "remplacera le lien seul"}.`;
-        return;
-      }
-
-      if (skill.applyMode === "replace") {
-        cleaned = repairMarkdownProposal(cleaned);
-        if (!cleaned.trim() || !isGroundedTransform(targetText, cleaned)) {
-          statusMessage =
-            "L'IA a dérivé du contenu — proposition rejetée. Réessayez ou utilisez une skill locale.";
-          return;
-        }
-      } else {
-        if (isEmptyLlmAppendix(cleaned) || !isGroundedAppendix(targetText, cleaned)) {
-          statusMessage = skill.emptyMessage;
-          return;
-        }
-        if (skill.id === "brief") {
-          cleaned = cleaned.trim();
-        }
-      }
-
-      pushSuggestion({
-        action: "custom",
-        skillId: id,
-        label: skill.label,
-        scope: skill.applyMode === "append" ? "à ajouter en fin de note" : "note",
-        proposedText: cleaned,
-        originalText: skill.applyMode === "append" ? "" : targetText,
-        source: "manual",
-        notePath: pathAtStart,
-        applyMode: skill.applyMode,
-        reason: skill.hint,
-      });
-      statusMessage = `${skill.label} prêt — appliquez ou ignorez.`;
-    } catch (e) {
-      if (stillCurrentAiRequest(epoch, pathAtStart)) {
-        statusMessage = `Erreur IA : ${e}`;
-      }
-    } finally {
-      aiQueue.aiLoading = false;
-    }
-  }
-
-  function formatRelatedAppendix(ragBlock: string): string {
-    if (!ragBlock.trim()) return "";
-    const lines: string[] = [];
-    const re = /\[(\d+)\]\s+(.+?)\s+\(([^)]+)\)\n([\s\S]*?)(?=\n\[\d+\]\s+|$)/g;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(ragBlock)) !== null) {
-      const title = m[2].trim();
-      const excerpt = m[4].trim().slice(0, 180).replace(/\s+/g, " ");
-      lines.push(`- [[${title}]] — ${excerpt}${excerpt.length >= 180 ? "…" : ""}`);
-    }
-    if (lines.length) return lines.join("\n");
-    return ragBlock
-      .replace(/^Contexte récupéré[\s\S]*?:\n+/i, "")
-      .trim()
-      .slice(0, 1200);
+    await runSkill(aiDeps(), id);
   }
 
   async function handleCustomPrompt(instruction: string) {
-    if (!instruction.trim() || !noteSession.selectedPath) return;
-
-    const epoch = noteSession.aiEpoch;
-    const pathAtStart = noteSession.selectedPath;
-    const sel = editorSelection;
-    const targetText = sel?.text ?? noteBody(noteSession.content);
-    if (!targetText.trim()) {
-      statusMessage = "Rien à traiter — sélectionnez du texte ou écrivez dans la note.";
-      return;
-    }
-
-    if (!ollamaStatus.available) {
-      const started = await ensureOllamaRunning(true);
-      if (!started) {
-        settingsOpen = true;
-        statusMessage = "Configurez ou démarrez Ollama dans les réglages.";
-        return;
-      }
-    }
-
-    aiQueue.aiLoading = true;
-    aiQueue.companionOpen = true;
-    const scope = sel ? "sélection" : "note";
-    statusMessage = `Prompt custom (${scope}) — en cours…`;
-
-    try {
-      const wantsRag = instructionWantsVaultContext(instruction);
-      const result = await invoke<string>("ollama_custom_prompt", {
-        instruction: instruction.trim(),
-        content: targetText,
-        model: activeModel,
-        noteContext: noteContext.trim() || null,
-        ragContext: wantsRag
-          ? (await fetchRagContext(targetText.slice(0, 800), pathAtStart)) || null
-          : null,
-      });
-
-      if (!stillCurrentAiRequest(epoch, pathAtStart)) return;
-
-      const proposal = buildAiProposal("custom", targetText, result, instruction.trim());
-      if (!proposal) {
-        statusMessage = result.trim()
-          ? "L'IA a changé de sujet — proposition rejetée. Le contenu source est conservé, réessayez."
-          : "Réponse IA vide — modifiez le prompt ou réessayez.";
-        return;
-      }
-
-      const label =
-        instruction.trim().length > 42
-          ? `Custom : ${instruction.trim().slice(0, 39)}…`
-          : `Custom : ${instruction.trim()}`;
-
-      pushSuggestion({
-        action: "custom",
-        label,
-        scope,
-        proposedText: proposal,
-        originalText: targetText,
-        source: "manual",
-        notePath: pathAtStart,
-        reason: instruction.trim(),
-        selection: sel ? { start: sel.start, end: sel.end, text: sel.text } : undefined,
-      });
-      statusMessage = "Suggestion custom prête — appliquez ou ignorez.";
-    } catch (e) {
-      if (stillCurrentAiRequest(epoch, pathAtStart)) {
-        statusMessage = `Erreur IA : ${e}`;
-      }
-    } finally {
-      aiQueue.aiLoading = false;
-    }
+    await runCustomPrompt(aiDeps(), instruction);
   }
+
 
   function applySuggestion(id: string) {
     const suggestion = aiQueue.aiSuggestions.find((s) => s.id === id);
@@ -1697,7 +1091,7 @@
     };
 
     try {
-      if (ollamaStatus.available) {
+      if (ollamaSession.status.available) {
         const result = await invoke<ProactiveSuggestionResponse>("ollama_proactive_suggest", {
           paragraph: span.text,
           noteExcerpt: noteSession.content.slice(0, 1500),
@@ -2087,12 +1481,12 @@
       </button>
       <button
         type="button"
-        class="rounded-lg px-1 transition hover:bg-surface-muted {ollamaStatus.available ? '' : 'text-accent-blue'}"
+        class="rounded-lg px-1 transition hover:bg-surface-muted {ollamaSession.status.available ? '' : 'text-accent-blue'}"
         onclick={handleOllamaHeaderClick}
-        title={ollamaStatus.available ? "Ollama connecté — réglages" : "Cliquer pour démarrer Ollama"}
+        title={ollamaSession.status.available ? "Ollama connecté — réglages" : "Cliquer pour démarrer Ollama"}
       >
-        Ollama : {ollamaStatus.available ? "connecté" : "hors ligne"}
-        {#if ollamaStatus.available}
+        Ollama : {ollamaSession.status.available ? "connecté" : "hors ligne"}
+        {#if ollamaSession.status.available}
           · {activeModel}
         {/if}
       </button>
@@ -2130,8 +1524,8 @@
   <!-- Léger inset : les arrondis ne collent plus aux bords de la fenêtre -->
   <div class="flex min-h-0 flex-1 gap-2.5 px-2.5 pb-2.5">
     <Sidebar
-      {entries}
-      {vaultPath}
+      entries={vaultStore.entries}
+      vaultPath={vaultStore.vaultPath}
       selectedPath={noteSession.selectedPath}
       onSelect={loadNote}
       onRefresh={refreshVault}
@@ -2148,10 +1542,10 @@
         content={noteSession.content}
         {title}
         notePath={noteSession.selectedPath}
-        {vaultPath}
+        vaultPath={vaultStore.vaultPath}
         dirty={noteSession.dirty}
         saving={noteSession.saving}
-        ollamaAvailable={ollamaStatus.available}
+        ollamaAvailable={ollamaSession.status.available}
         aiLoading={aiQueue.aiLoading}
         companionOpen={aiQueue.companionOpen}
         companionBusy={aiQueue.aiLoading || aiQueue.proactiveLoading}
@@ -2207,7 +1601,7 @@
           >
             + Nouvelle note
           </button>
-          {#if !ollamaStatus.available}
+          {#if !ollamaSession.status.available}
             <button
               type="button"
               class="btn-ghost border border-border px-4 py-2 text-sm"
@@ -2234,11 +1628,11 @@
 
 <SettingsPanel
   open={settingsOpen}
-  vaultPath={vaultPath}
+  vaultPath={vaultStore.vaultPath}
   onClose={closeSettings}
-  onOllamaUpdated={(s) => (ollamaStatus = s)}
+  onOllamaUpdated={(s) => (ollamaSession.status = s)}
   onVaultChanged={async (path) => {
-    vaultPath = path;
+    vaultStore.vaultPath = path;
     resetNoteSession();
     resetAiQueue();
     historyOpen = false;
@@ -2276,7 +1670,7 @@
   onBuddyToggle={handleBuddyToggle}
   onCustomPrompt={handleCustomPrompt}
   onSkill={handleSkill}
-  ollamaAvailable={ollamaStatus.available}
+  ollamaAvailable={ollamaSession.status.available}
   onApply={applySuggestion}
   onDismiss={dismissSuggestion}
   onDismissAll={() => (aiQueue.aiSuggestions = [])}
@@ -2303,7 +1697,7 @@
 
 <SetupWizard
   open={setupOpen}
-  onOllamaUpdated={(s) => (ollamaStatus = s)}
+  onOllamaUpdated={(s) => (ollamaSession.status = s)}
   onComplete={() => {
     setupOpen = false;
     try {

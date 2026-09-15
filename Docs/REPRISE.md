@@ -67,9 +67,9 @@ P0 / P1 / P2 **terminés**. Il ne reste que du **P3 optionnel** (NSIS, Authentic
 ## 3. Prochaines actions (priorisées)
 
 ### Dette technique (recommandé avant grosses features)
-1. Continuer à alléger `src/routes/+page.svelte` (~2100+ lignes) — extraire buddy / Ollama / vault / skills
-2. Tests unitaires sur les stores (`noteSession`, `voiceSession`, `aiQueue`)
-3. CI : ajouter éventuellement `tauri build` (lourd) ou au moins un job Windows documenté
+1. Continuer à alléger `src/routes/+page.svelte` (~1745 lignes) — extraire buddy / proactif / voix
+2. Tests stores : `aiQueue` + `ollamaSession` OK ; reste `noteSession` / `voiceSession`
+3. CI : job `windows-smoke` + couverture Vitest ; `tauri build` Windows encore manuel
 4. Valider manuellement migration historique legacy + reindex RAG sur un vrai vault
 
 ### Produit (roadmap README / plan)
