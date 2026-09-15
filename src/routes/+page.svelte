@@ -1,10 +1,23 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { invoke } from "$lib/tauri/api";
   import type { UnlistenFn } from "@tauri-apps/api/event";
   import { registerVoiceListeners, type VoiceCrashState } from "$lib/app/voiceListeners";
   import { resolveFirstRunUi } from "$lib/app/appBootstrap";
-  import { save, open } from "@tauri-apps/plugin-dialog";
+  import { runAppStartup } from "$lib/app/appStartup";
+  import {
+    createNoteWithPrompt,
+    createFolderWithPrompt,
+    deleteVaultPath,
+    renameVaultPath,
+    moveVaultPath,
+  } from "$lib/app/vaultUiActions";
+  import { exportCurrentNote, importTextFilesAsNotes } from "$lib/app/noteImportExport";
+  import { openNoteByWikilinkQuery } from "$lib/app/openWikilinkNote";
+  import {
+    importImagesFromPaths,
+    importPastedImageForNote,
+    insertImageFromPicker,
+  } from "$lib/app/noteImageActions";
   import Sidebar from "$lib/components/Sidebar.svelte";
   import MarkdownEditor from "$lib/components/MarkdownEditor.svelte";
   import SearchPanel from "$lib/components/SearchPanel.svelte";
@@ -15,7 +28,7 @@
   import WelcomeSplash from "$lib/components/WelcomeSplash.svelte";
   import SetupWizard from "$lib/components/SetupWizard.svelte";
   import NoteHistoryPanel from "$lib/components/NoteHistoryPanel.svelte";
-  import { applyTheme, loadTheme, saveTheme, toggleTheme } from "$lib/stores/theme";
+  import { saveTheme, toggleTheme } from "$lib/stores/theme";
   import type { ParagraphSpan } from "$lib/note/paragraph";
   import {
     loadProactiveEnabled,
@@ -26,13 +39,10 @@
     saveAutoSummarizeEnabled,
   } from "$lib/stores/companion";
   import { type AiActionRequest, type TextSelection } from "$lib/voice/commands";
-  import { mapCaretThroughReplace, locateSelectionInContent } from "$lib/note/caret";
-  import { resolveWikilink, flattenNotes, noteStem } from "$lib/vault/wikilinks";
   import { type SkillId } from "$lib/ai/skills";
   import type { BuddyAction } from "$lib/ai/scribeBuddy";
   import {
     buddySession,
-    initBuddyFromStorage,
     resolveBuddyMood,
     refreshBuddyTip,
     bumpBuddyTyping,
@@ -56,15 +66,7 @@
   } from "$lib/app/proactiveScan";
   import { maybeAutoSummarize } from "$lib/app/autoSummarize";
   import { createAutoTypoNotice, runBatchAutoTypoFix } from "$lib/app/autoTypoFlow";
-  import {
-    pickImageFile,
-    importImageFromPath as importImagePath,
-    importPastedImageBytes,
-    imageMarkdownForRelative,
-    imageImportStatusMessage,
-  } from "$lib/app/noteImages";
-  import { noteBody, parseNoteContext, setNoteContext, setFrontmatterTags } from "$lib/note/frontmatter";
-  import { mergeBodyMarkdown } from "$lib/markdown/bridge";
+  import { parseNoteContext, setNoteContext } from "$lib/note/frontmatter";
   import PixelIcon from "$lib/components/PixelIcon.svelte";
   import { dismissToast, notify } from "$lib/stores/notifications";
   import {
@@ -76,7 +78,6 @@
     resetNoteSession,
     repairCurrentNoteWikilinks,
   } from "$lib/stores/noteSession.svelte";
-  import { repairCorruptedWikilinkMarkdown } from "$lib/markdown/bridge";
   import {
     voiceSession,
     refreshVoice,
@@ -91,11 +92,9 @@
     aiQueue,
     silenceAiHelpers as markAiQuiet,
     isAiQuiet,
-    pushSuggestion,
     dismissSuggestion,
     clearSuggestionsForNote,
     editorHighlightFromSuggestions,
-    stillCurrentAiRequest,
     resetAiQueue,
   } from "$lib/stores/aiQueue.svelte";
   import {
@@ -103,15 +102,7 @@
     ensureOllamaRunning as ensureOllamaCore,
     activeOllamaModel,
   } from "$lib/stores/ollamaSession.svelte";
-  import {
-    vaultStore,
-    refreshVault,
-    createNote as createVaultNote,
-    createFolder as createVaultFolder,
-    deleteVaultItem,
-    renameVaultNote,
-    moveVaultItem,
-  } from "$lib/stores/vaultStore.svelte";
+  import { vaultStore, refreshVault } from "$lib/stores/vaultStore.svelte";
   import {
     runAiAction,
     runSkill,
@@ -308,23 +299,34 @@
     await chain;
   }
 
+  function vaultUiDeps() {
+    return {
+      setStatus: (msg: string) => {
+        statusMessage = msg;
+      },
+      openNote: loadNote,
+    };
+  }
+
+  function noteImageDeps() {
+    return {
+      setStatus: (msg: string) => {
+        statusMessage = msg;
+      },
+      queueMarkdown: (markdown: string, statusMsg: string) => {
+        pendingImageMarkdown = markdown;
+        statusMessage = statusMsg;
+      },
+    };
+  }
+
   async function openNoteByQuery(query: string) {
-    const match = resolveWikilink(query, vaultStore.entries);
-    if (!match) {
-      const msg = `Aucune note trouvée pour « ${query} ».`;
-      statusMessage = msg;
-      notify({ kind: "warning", title: "Scribe · ouvrir", message: msg, key: "voice-cmd" });
-      openSearchPanel();
-      await runVaultSearch(query);
-      return;
-    }
-    await loadNote(match.path);
-    statusMessage = `Note ouverte : ${match.title}`;
-    notify({
-      kind: "success",
-      title: "Scribe · ouvrir",
-      message: `Note ouverte : ${match.title}`,
-      key: "voice-cmd",
+    await openNoteByWikilinkQuery(query, {
+      entries: vaultStore.entries,
+      setStatus: (msg) => {
+        statusMessage = msg;
+      },
+      openNote: loadNote,
     });
   }
 
@@ -458,67 +460,23 @@
   }
 
   async function handleCreateNote(parentPath: string) {
-    const name = prompt("Nom de la note :");
-    if (!name?.trim()) return;
-    const path = await createVaultNote(parentPath, name.trim());
-    await loadNote(path);
+    await createNoteWithPrompt(parentPath, vaultUiDeps());
   }
 
   async function handleCreateFolder(parentPath: string) {
-    const name = prompt("Nom du dossier :");
-    if (!name?.trim()) return;
-    await createVaultFolder(parentPath, name.trim());
+    await createFolderWithPrompt(parentPath);
   }
 
   async function handleDelete(path: string) {
-    const isNote = path.toLowerCase().endsWith(".md");
-    const label = path.split("/").pop() ?? path;
-    if (isNote) {
-      if (
-        !confirm(
-          `Supprimer « ${label} » ?\n\nSi un fichier .txt / .text jumeau existe encore, il sera aussi supprimé.`,
-        )
-      ) {
-        return;
-      }
-    } else if (!confirm(`Supprimer le dossier vide « ${label} » ?`)) {
-      return;
-    }
-    try {
-      const result = await deleteVaultItem(path);
-      statusMessage = result.isNote ? `Note « ${result.label} » supprimée` : `Dossier « ${result.label} » supprimé`;
-    } catch (e) {
-      statusMessage = String(e);
-      notify({ kind: "error", title: "Suppression impossible", message: String(e), key: "vault-delete" });
-    }
+    await deleteVaultPath(path, vaultUiDeps());
   }
 
   async function handleRename(path: string) {
-    const current = path.split("/").pop()?.replace(/\.md$/, "") ?? "";
-    const name = prompt("Nouveau nom de la note :", current);
-    if (!name?.trim() || name.trim() === current) return;
-    try {
-      await renameVaultNote(path, name.trim());
-      statusMessage = `Note renommée : ${name.trim()}`;
-      notify({ kind: "success", title: "Renommage", message: statusMessage, key: "vault-rename" });
-    } catch (e) {
-      statusMessage = String(e);
-      notify({ kind: "error", title: "Renommage impossible", message: String(e), key: "vault-rename" });
-    }
+    await renameVaultPath(path, vaultUiDeps());
   }
 
   async function handleMove(sourcePath: string, destinationParent: string) {
-    try {
-      await moveVaultItem(sourcePath, destinationParent);
-      const msg = destinationParent
-        ? `Déplacé dans « ${destinationParent} »`
-        : "Déplacé à la racine du vault";
-      statusMessage = msg;
-      notify({ kind: "success", title: "Déplacement", message: msg, key: "vault-move" });
-    } catch (e) {
-      statusMessage = String(e);
-      notify({ kind: "error", title: "Déplacement impossible", message: String(e), key: "vault-move" });
-    }
+    await moveVaultPath(sourcePath, destinationParent, vaultUiDeps());
   }
 
   async function handleAiAction(request: AiActionRequest) {
@@ -594,51 +552,16 @@
 
   let buddyMood = $derived(resolveBuddyMood());
 
-  async function queueImageMarkdown(relative: string) {
-    pendingImageMarkdown = imageMarkdownForRelative(relative);
-    statusMessage = imageImportStatusMessage(relative);
-  }
-
-  async function importImageFromPath(sourcePath: string, useGlobalMedia = false) {
-    const relative = await importImagePath(
-      sourcePath,
-      noteSession.selectedPath,
-      useGlobalMedia,
-    );
-    await queueImageMarkdown(relative);
-  }
-
-  async function importImagesFromPaths(paths: string[]) {
-    if (!noteSession.selectedPath) {
-      statusMessage = "Ouvrez une note pour y insérer une image.";
-      return;
-    }
-    for (const sourcePath of paths) {
-      await importImageFromPath(sourcePath, false);
-    }
+  async function handleInsertImage() {
+    await insertImageFromPicker(noteImageDeps());
   }
 
   async function importPastedImage(base64: string, extension: string) {
-    if (!noteSession.selectedPath) {
-      statusMessage = "Ouvrez une note pour y coller une image.";
-      return;
-    }
-    const relative = await importPastedImageBytes(base64, extension, noteSession.selectedPath);
-    await queueImageMarkdown(relative);
+    await importPastedImageForNote(base64, extension, noteImageDeps());
   }
 
-  async function handleInsertImage() {
-    if (!noteSession.selectedPath) {
-      statusMessage = "Ouvrez une note pour y insérer une image.";
-      return;
-    }
-    const sourcePath = await pickImageFile();
-    if (!sourcePath) return;
-    try {
-      await importImageFromPath(sourcePath, false);
-    } catch (e) {
-      statusMessage = `Erreur image : ${e}`;
-    }
+  function handleImportImages(paths: string[]) {
+    void importImagesFromPaths(paths, noteImageDeps());
   }
 
   function openSettings() {
@@ -665,47 +588,11 @@
   }
 
   async function handleExport() {
-    if (!noteSession.selectedPath) return;
-    const dest = await save({
-      defaultPath: noteSession.selectedPath.split("/").pop() ?? "note.md",
-      filters: [{ name: "Markdown", extensions: ["md"] }],
-    });
-    if (!dest) return;
-    await invoke("export_note", { relativePath: noteSession.selectedPath, destination: dest });
-    statusMessage = "Note exportée.";
+    await exportCurrentNote(vaultUiDeps());
   }
 
   async function handleImportText() {
-    const picked = await open({
-      multiple: true,
-      filters: [{ name: "Texte / Markdown", extensions: ["txt", "text", "md"] }],
-      title: "Importer des notes (.txt → .md)",
-    });
-    if (!picked) return;
-    const paths = Array.isArray(picked) ? picked : [picked];
-    const ok = confirm(
-      "Les fichiers sélectionnés seront importés comme notes Markdown (.md) dans le vault.\n\n" +
-        "Les fichiers .txt déjà présents dans le vault sont convertis en .md puis le .txt source est supprimé automatiquement (Sync TXT).\n\n" +
-        "Les fichiers externes choisis ici restent intacts hors du vault — seule une copie .md est créée.\n\nContinuer ?",
-    );
-    if (!ok) return;
-    try {
-      const created = await invoke<string[]>("import_text_files", {
-        paths,
-        parentPath: "",
-      });
-      await refreshVault();
-      const msg =
-        created.length === 1
-          ? `Importé en Markdown : ${created[0]}`
-          : `${created.length} notes importées en .md`;
-      statusMessage = msg;
-      notify({ kind: "success", title: "Import TXT → MD", message: msg, key: "import-txt" });
-      if (created[0]) await loadNote(created[0]);
-    } catch (e) {
-      statusMessage = String(e);
-      notify({ kind: "error", title: "Import", message: String(e), key: "import-txt" });
-    }
+    await importTextFilesAsNotes(vaultUiDeps());
   }
 
   function handleThemeToggle() {
@@ -727,15 +614,13 @@
   }
 
   onMount(async () => {
-    theme = loadTheme();
-    applyTheme(theme);
-    proactiveEnabled = loadProactiveEnabled();
-    autoTypoFixEnabled = loadAutoTypoFixEnabled();
-    autoSummarizeEnabled = loadAutoSummarizeEnabled();
-    initBuddyFromStorage();
-    await refreshVault();
-    await ensureOllamaRunning(true);
-    await refreshVoice();
+    const startup = await runAppStartup((msg) => {
+      statusMessage = msg;
+    });
+    theme = startup.theme;
+    proactiveEnabled = startup.proactiveEnabled;
+    autoTypoFixEnabled = startup.autoTypoFixEnabled;
+    autoSummarizeEnabled = startup.autoSummarizeEnabled;
 
     unlisteners.push(
       ...(await registerVoiceListeners(
@@ -860,7 +745,7 @@
         onSave={() => noteSession.selectedPath && persistNote(noteSession.selectedPath, noteSession.content)}
         onAiAction={handleAiAction}
         onInsertImage={handleInsertImage}
-        onImportImages={importImagesFromPaths}
+        onImportImages={handleImportImages}
         onPasteImageBytes={importPastedImage}
         onExport={handleExport}
         onOpenHistory={() => (historyOpen = true)}

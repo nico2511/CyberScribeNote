@@ -3,6 +3,7 @@ mod fs_util;
 mod net_util;
 mod vault_path;
 mod ollama_sanitize;
+mod voice_util;
 
 use commands::{
     create_folder, create_note, delete_item, export_note, get_app_config,
