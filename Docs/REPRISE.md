@@ -66,11 +66,12 @@ P0 / P1 / P2 **terminés**. Il ne reste que du **P3 optionnel** (NSIS, Authentic
 
 ## 3. Prochaines actions (priorisées)
 
-### Dette technique (recommandé avant grosses features)
-1. Alléger encore `+page.svelte` (~1040 lignes) — handlers vault/import optionnels
-2. Tests stores : `noteSession` + `voiceSession` OK
-3. CI : job `windows-smoke` + couverture Vitest ; `tauri build` Windows encore manuel
-4. Valider manuellement migration historique legacy + reindex RAG sur un vrai vault
+### Dette technique (post-refactor audit — état actuel)
+1. `+page.svelte` ~900 lignes (orchestration UI) — acceptable ; gros modules dans `src/lib/app/` et stores
+2. Tests : 92 Vitest (lib + stores) ; pas d’E2E Tauri
+3. CI : Ubuntu + Windows smoke + couverture ; `cargo clippy` informatif ; **`tauri build` Windows manuel**
+4. Rust : `vault_path`, `ollama_sanitize`, `voice_util` extraits ; `vault.rs` / `voice.rs` encore volumineux
+5. Valider manuellement migration historique legacy + reindex RAG sur un vrai vault
 
 ### Produit (roadmap README / plan)
 1. Skill « indexer ce dossier → `sommaire.md` »
