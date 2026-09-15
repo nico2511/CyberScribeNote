@@ -68,9 +68,9 @@ P0 / P1 / P2 **terminés**. Il ne reste que du **P3 optionnel** (NSIS, Authentic
 
 ### Dette technique (post-refactor audit — état actuel)
 1. `+page.svelte` ~900 lignes (orchestration UI) — acceptable ; gros modules dans `src/lib/app/` et stores
-2. Tests : 92 Vitest (lib + stores) ; pas d’E2E Tauri
-3. CI : Ubuntu + Windows smoke + couverture ; `cargo clippy` informatif ; **`tauri build` Windows manuel**
-4. Rust : `vault_path`, `ollama_sanitize`, `voice_util` extraits ; `vault.rs` / `voice.rs` encore volumineux
+2. Tests : 96 Vitest (lib + stores) ; pas d’E2E Tauri
+3. CI : Ubuntu (deps GTK pour `cargo test`) + Windows smoke + couverture ; `cargo clippy` informatif ; **`tauri build` Windows manuel**
+4. Rust : `vault_path`, `vault_history`, `ollama_sanitize`, `voice_util` extraits ; `voice.rs` encore volumineux
 5. Valider manuellement migration historique legacy + reindex RAG sur un vrai vault
 
 ### Produit (roadmap README / plan)

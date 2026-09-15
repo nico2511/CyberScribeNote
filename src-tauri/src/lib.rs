@@ -2,6 +2,7 @@ mod commands;
 mod fs_util;
 mod net_util;
 mod vault_path;
+mod vault_history;
 mod ollama_sanitize;
 mod voice_util;
 
