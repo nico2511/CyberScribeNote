@@ -9,6 +9,8 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
+use crate::voice_cache::list_whisper_cache_entries;
+use crate::voice_hotkey::parse_hotkey;
 use crate::voice_util::hidden_command;
 
 static VOICE_RESTART_GUARD: Mutex<Option<Instant>> = Mutex::new(None);
@@ -70,14 +72,7 @@ pub struct VoiceTranscript {
     pub text: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WhisperCacheEntry {
-    pub name: String,
-    pub path: String,
-    pub size_bytes: u64,
-    pub is_dir: bool,
-}
+pub use crate::voice_cache::WhisperCacheEntry;
 
 pub struct VoiceState {
     child: Option<Child>,
@@ -621,60 +616,6 @@ impl VoiceState {
     }
 }
 
-fn scan_cache_dir(dir: &Path, base: &Path, entries: &mut Vec<WhisperCacheEntry>, depth: u32) {
-    if depth > 4 {
-        return;
-    }
-    let Ok(read_dir) = fs::read_dir(dir) else {
-        return;
-    };
-    for entry in read_dir.flatten() {
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().to_string();
-        if path.is_dir() {
-            let size = dir_size(&path);
-            entries.push(WhisperCacheEntry {
-                name: name.clone(),
-                path: path
-                    .strip_prefix(base)
-                    .map(|p| p.to_string_lossy().replace('\\', "/"))
-                    .unwrap_or(name),
-                size_bytes: size,
-                is_dir: true,
-            });
-            scan_cache_dir(&path, base, entries, depth + 1);
-        } else {
-            let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-            if size > 0 {
-                entries.push(WhisperCacheEntry {
-                    name: name.clone(),
-                    path: path
-                        .strip_prefix(base)
-                        .map(|p| p.to_string_lossy().replace('\\', "/"))
-                        .unwrap_or(name),
-                    size_bytes: size,
-                    is_dir: false,
-                });
-            }
-        }
-    }
-}
-
-fn dir_size(path: &Path) -> u64 {
-    let mut total = 0u64;
-    if let Ok(read_dir) = fs::read_dir(path) {
-        for entry in read_dir.flatten() {
-            let p = entry.path();
-            if p.is_dir() {
-                total += dir_size(&p);
-            } else if let Ok(meta) = fs::metadata(&p) {
-                total += meta.len();
-            }
-        }
-    }
-    total
-}
-
 fn handle_worker_event(app: &AppHandle, json: serde_json::Value) {
     let event_type = json.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
@@ -754,14 +695,6 @@ pub fn voice_config_from_app() -> VoiceConfig {
     }
 }
 
-pub fn parse_hotkey(raw: &str) -> Result<Shortcut, String> {
-    let normalized = raw.trim().replace(' ', "");
-    if normalized.is_empty() {
-        return "F8".parse::<Shortcut>().map_err(|e| e.to_string());
-    }
-    normalized.parse::<Shortcut>().map_err(|e| e.to_string())
-}
-
 pub fn register_voice_hotkey(app: &AppHandle, hotkey: &str) -> Result<(), String> {
     let shortcut: Shortcut = parse_hotkey(hotkey)?;
     let gs = app.global_shortcut();
@@ -829,11 +762,7 @@ pub fn voice_models_dir() -> Result<String, String> {
 pub fn voice_list_whisper_cache() -> Result<Vec<WhisperCacheEntry>, String> {
     let dir = whisper_models_dir();
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let mut entries = Vec::new();
-    scan_cache_dir(&dir, &dir, &mut entries, 0);
-    entries.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
-    entries.truncate(30);
-    Ok(entries)
+    Ok(list_whisper_cache_entries(&dir, 30))
 }
 
 #[tauri::command]

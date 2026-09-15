@@ -5,6 +5,8 @@ mod vault_path;
 mod vault_history;
 mod ollama_sanitize;
 mod voice_util;
+mod voice_cache;
+mod voice_hotkey;
 
 use commands::{
     create_folder, create_note, delete_item, export_note, get_app_config,
