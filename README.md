@@ -9,6 +9,8 @@ Basé sur le plan [CyberScribe Notes](Docs/CyberScribe_Notes_Plan.md) et inspir�
 
 **Reprise après réinstall système :** [Docs/REPRISE.md](Docs/REPRISE.md) — état v0.5.4, checklist, prochaines actions.
 
+![CyberScribeNote — éditeur, vault et compagnon IA](Docs/sc.jpg)
+
 ## Fonctionnalités (v0.5.x)
 
 - Vault Markdown configurable (défaut `Documents/CyberScribeNote/vault` — changeable dans Réglages)
