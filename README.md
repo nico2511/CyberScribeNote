@@ -7,8 +7,6 @@ Releases : [Releases](https://github.com/nico2511/CyberScribeNote/releases)
 
 Basé sur le plan [CyberScribe Notes](Docs/CyberScribe_Notes_Plan.md) et inspiré de [CyberScribe](https://github.com/nico2511/CyberScribe) pour la partie vocale.
 
-**Reprise après réinstall système :** [Docs/REPRISE.md](Docs/REPRISE.md) — état v0.5.4, checklist, prochaines actions.
-
 ![CyberScribeNote — éditeur, vault et compagnon IA](Docs/sc.jpg)
 
 ## Fonctionnalités (v0.5.x)
@@ -147,7 +145,6 @@ Sortie : `src-tauri/target/release/cyberscribe-note.exe`
 5. Templates / graph · E2E Tauri
 6. Bundling NSIS + updater (+ Authenticode) · builds Linux
 
-**Reprise après réinstall :** [Docs/REPRISE.md](Docs/REPRISE.md)  
 Détail plan : [Docs/CyberScribe_Notes_Plan.md](Docs/CyberScribe_Notes_Plan.md).
 
 ## Licence

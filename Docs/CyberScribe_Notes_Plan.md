@@ -179,8 +179,6 @@ cyberscribe-notes/
 
 ## 7. Prochaines actions immédiates
 
-> Voir aussi le handoff post-réinstall : [REPRISE.md](REPRISE.md).
-
 1. Continuer le découpage de `+page.svelte` (buddy / Ollama / vault / skills)
 2. Skill « indexer ce dossier → `sommaire.md` » + templates / graph
 3. Tests stores + éventuellement CI build Windows
