@@ -109,6 +109,7 @@ pub struct OllamaStatus {
     pub network_mode: String,
     pub is_localhost: bool,
     pub ollama_host_env: Option<String>,
+    pub ollama_models_env: Option<String>,
     pub network_guidance: Option<String>,
 }
 
@@ -122,6 +123,7 @@ pub struct OllamaDetect {
     pub network_mode: String,
     pub is_localhost: bool,
     pub ollama_host_env: Option<String>,
+    pub ollama_models_env: Option<String>,
     pub network_guidance: Option<String>,
 }
 
@@ -186,6 +188,7 @@ fn analyze_network(host: &str) -> (String, bool, Option<String>) {
     let lower = host.to_lowercase();
     let is_localhost = lower.contains("127.0.0.1") || lower.contains("localhost");
     let ollama_env = std::env::var("OLLAMA_HOST").ok();
+    let models_env = std::env::var("OLLAMA_MODELS").ok();
 
     let network_mode = if is_localhost {
         "local".to_string()
@@ -214,6 +217,24 @@ fn analyze_network(host: &str) -> (String, bool, Option<String>) {
         );
     }
 
+    // Windows desktop app often keeps Models in Settings (db.sqlite) and can
+    // ignore / override OLLAMA_MODELS — pulls then still land in %USERPROFILE%\.ollama.
+    let models_hint = match models_env.as_deref() {
+        Some(path) => format!(
+            "OLLAMA_MODELS={path}. Sous Windows, vérifiez aussi Ollama → Settings → Model location \
+             (doit être identique), puis quittez l'icône tray et relancez. Sinon les pulls restent dans .ollama."
+        ),
+        None => {
+            "Chemin modèles : défaut = dossier .ollama du profil. Pour un autre disque : variable \
+             OLLAMA_MODELS + (Windows) Settings → Model location, puis redémarrage complet d'Ollama."
+                .into()
+        }
+    };
+    guidance = Some(match guidance {
+        Some(g) => format!("{g} {models_hint}"),
+        None => models_hint,
+    });
+
     (network_mode, is_localhost, guidance)
 }
 
@@ -233,6 +254,7 @@ pub async fn ollama_detect() -> Result<OllamaDetect, String> {
         network_mode,
         is_localhost,
         ollama_host_env,
+        ollama_models_env: std::env::var("OLLAMA_MODELS").ok(),
         network_guidance,
     })
 }
@@ -276,6 +298,7 @@ pub async fn ollama_status() -> Result<OllamaStatus, String> {
                 network_mode,
                 is_localhost,
                 ollama_host_env,
+                ollama_models_env: std::env::var("OLLAMA_MODELS").ok(),
                 network_guidance,
             })
         }
@@ -287,6 +310,7 @@ pub async fn ollama_status() -> Result<OllamaStatus, String> {
             network_mode,
             is_localhost,
             ollama_host_env,
+            ollama_models_env: std::env::var("OLLAMA_MODELS").ok(),
             network_guidance,
         }),
     }
@@ -474,26 +498,27 @@ pub fn ollama_start_service() -> Result<String, String> {
 
     #[cfg(windows)]
     {
+        // Prefer the desktop app only. Spawning a second bare `ollama serve`
+        // races for :11434 and often lands pulls in the default `%USERPROFILE%\.ollama`
+        // while the tray app's Model location / OLLAMA_MODELS is ignored.
         if let Some(exe) = find_ollama_app() {
             std::process::Command::new(&exe)
                 .spawn()
                 .map_err(|e| format!("Impossible de lancer Ollama : {e}"))?;
-        } else {
-            std::process::Command::new("cmd")
-                .args(["/C", "start", "", "ollama", "app"])
-                .spawn()
-                .map_err(|e| e.to_string())?;
+            return Ok("Ollama lancé. Attendez quelques secondes…".into());
         }
 
         if cli_installed() {
             let mut serve = std::process::Command::new("ollama");
             serve.arg("serve");
-            #[cfg(windows)]
             serve.creation_flags(0x08000000);
-            let _ = serve.spawn();
+            serve
+                .spawn()
+                .map_err(|e| format!("Impossible de démarrer ollama serve : {e}"))?;
+            return Ok("ollama serve lancé. Attendez quelques secondes…".into());
         }
 
-        return Ok("Ollama lancé. Attendez quelques secondes…".into());
+        return Err("Ollama introuvable.".into());
     }
 
     #[cfg(not(windows))]
