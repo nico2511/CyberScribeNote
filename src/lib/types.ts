@@ -19,6 +19,7 @@ export interface OllamaStatus {
   networkMode: string;
   isLocalhost: boolean;
   ollamaHostEnv?: string;
+  ollamaModelsEnv?: string;
   networkGuidance?: string;
 }
 
@@ -30,6 +31,7 @@ export interface OllamaDetect {
   networkMode: string;
   isLocalhost: boolean;
   ollamaHostEnv?: string;
+  ollamaModelsEnv?: string;
   networkGuidance?: string;
 }
 

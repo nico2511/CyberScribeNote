@@ -466,6 +466,11 @@
                 {#if detect.ollamaHostEnv}
                   <br /><span class="text-accent-blue">OLLAMA_HOST = {detect.ollamaHostEnv}</span>
                 {/if}
+                {#if detect.ollamaModelsEnv}
+                  <br /><span class="text-accent-blue">OLLAMA_MODELS = {detect.ollamaModelsEnv}</span>
+                {:else}
+                  <br /><span class="text-danger">OLLAMA_MODELS non défini (défaut → .ollama)</span>
+                {/if}
               </p>
             {/if}
           {/if}
