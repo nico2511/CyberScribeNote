@@ -1,0 +1,6 @@
+# Microsoft MarkItDown — conversion documents → Markdown (import CyberScribeNote)
+# https://github.com/microsoft/markitdown
+#
+# Extra « all » : PDF, Office, HTML, images (OCR), EPUB, etc.
+# Python 3.10+ requis.
+markitdown[all]>=0.1.0

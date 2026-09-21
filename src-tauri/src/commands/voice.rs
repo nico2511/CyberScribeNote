@@ -11,7 +11,7 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 use crate::voice_cache::list_whisper_cache_entries;
 use crate::voice_hotkey::parse_hotkey;
-use crate::voice_util::hidden_command;
+use crate::voice_util::{find_python, hidden_command};
 
 static VOICE_RESTART_GUARD: Mutex<Option<Instant>> = Mutex::new(None);
 
@@ -189,31 +189,6 @@ impl VoiceState {
         )
     }
 
-    fn find_python() -> Option<String> {
-        // Préférer le vrai python.exe (pas le lanceur `py`) pour un sidecar stable.
-        for candidate in ["python", "python3", "py"] {
-            let mut probe = hidden_command(candidate);
-            if candidate == "py" {
-                probe.args(["-3", "-c", "import sys; print(sys.executable)"]);
-            } else {
-                probe.args(["-c", "import sys; print(sys.executable)"]);
-            }
-            if let Ok(output) = probe.output() {
-                if output.status.success() {
-                    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                    if !path.is_empty() && Path::new(&path).exists() {
-                        return Some(path);
-                    }
-                    // Fallback: commande brute si le chemin n'est pas résolu
-                    if candidate != "py" {
-                        return Some(candidate.to_string());
-                    }
-                }
-            }
-        }
-        None
-    }
-
     pub fn check_deps(app: Option<&AppHandle>) -> VoiceDepsStatus {
         if let Some(exe) = Self::worker_exe_path(app) {
             return VoiceDepsStatus {
@@ -230,7 +205,7 @@ impl VoiceState {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
 
-        let Some(python) = Self::find_python() else {
+        let Some(python) = find_python() else {
             return VoiceDepsStatus {
                 mode: "python".into(),
                 python_found: false,
@@ -386,7 +361,7 @@ impl VoiceState {
                 .map_err(|e| format!("Impossible de lancer le sidecar ({}) : {e}", exe.display()))?
         } else {
             let script = Self::worker_script_path(Some(app))?;
-            let python = Self::find_python().ok_or(
+            let python = find_python().ok_or(
                 "Python introuvable — compilez voice_worker.exe (voice/build_sidecar.ps1) ou installez Python.",
             )?;
 
@@ -767,7 +742,7 @@ pub fn voice_list_whisper_cache() -> Result<Vec<WhisperCacheEntry>, String> {
 
 #[tauri::command]
 pub fn voice_install_deps(app: AppHandle) -> Result<String, String> {
-    let python = VoiceState::find_python().ok_or("Python introuvable")?;
+    let python = find_python().ok_or("Python introuvable")?;
     let worker_dir = VoiceState::worker_script_path(Some(&app))?
         .parent()
         .ok_or("Dossier voice introuvable")?

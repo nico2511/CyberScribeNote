@@ -29,7 +29,7 @@ Basé sur le plan [CyberScribe Notes](Docs/CyberScribe_Notes_Plan.md) et inspir�
 - Panneau **Réglages** (Ctrl+,) : vault, sync TXT, historique, Ollama, voix (sidecar vs Python)
 - Images à la position du curseur (`_media/` par note)
 - **Dictée PTT** : sidecar `voice_worker.exe` (priorité, VAD Silero inclus) ou Python
-- Single-instance · Export `.md` · Import multi `.txt`
+- Single-instance · Export `.md` · Import multi `.txt` · Import documents (PDF/Office/HTML → MD via [MarkItDown](https://github.com/microsoft/markitdown))
 - Durcissement sécurité Tauri (sanitize Markdown, IPC `.md`, asset scope vault, SSRF)
 
 ## Téléchargement (Windows)
@@ -81,6 +81,16 @@ pip install -r voice/requirements.txt
 Ou via l’app : **Réglages → Voix → Installer dépendances (pip)** (uniquement en mode Python).
 
 Logs worker : `Documents/CyberScribeNote/voice_worker.log`.
+
+### Import documents (MarkItDown)
+
+Conversion PDF / Word / PowerPoint / Excel / HTML / EPUB → note `.md` (bouton **Doc** dans la barre latérale).
+
+```bash
+pip install -r tools/requirements-markitdown.txt
+```
+
+Ou via l’app : **Réglages → Import documents → Installer MarkItDown (pip)** (Python 3.10+ requis).
 
 ## Démarrage
 
@@ -144,8 +154,9 @@ Sortie : `src-tauri/target/release/cyberscribe-note.exe`
 3. ~~Sécurité Tauri, rename, RAG par vault, stores, wizard Ollama~~ (v0.5)
 4. ~~Refactor audit + indexer dossier + CI release Windows~~ (v0.5.5)
 5. ~~Fix démarrage Ollama Windows (chemin modèles / pas de 2e serve)~~ (v0.5.6)
-6. Templates / graph · E2E Tauri
-7. Bundling NSIS + updater (+ Authenticode) · builds Linux
+6. Import documents MarkItDown (PDF / Office → MD)
+7. Templates / graph · E2E Tauri
+8. Bundling NSIS + updater (+ Authenticode) · builds Linux
 
 Détail plan : [Docs/CyberScribe_Notes_Plan.md](Docs/CyberScribe_Notes_Plan.md).
 

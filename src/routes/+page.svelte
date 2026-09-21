@@ -11,7 +11,7 @@
     renameVaultPath,
     moveVaultPath,
   } from "$lib/app/vaultUiActions";
-  import { exportCurrentNote, importTextFilesAsNotes } from "$lib/app/noteImportExport";
+  import { exportCurrentNote, importDocumentsAsNotes, importTextFilesAsNotes } from "$lib/app/noteImportExport";
   import { openNoteByWikilinkQuery } from "$lib/app/openWikilinkNote";
   import {
     importImagesFromPaths,
@@ -305,6 +305,7 @@
         statusMessage = msg;
       },
       openNote: loadNote,
+      openSettings,
     };
   }
 
@@ -595,6 +596,10 @@
     await importTextFilesAsNotes(vaultUiDeps());
   }
 
+  async function handleImportDocuments() {
+    await importDocumentsAsNotes(vaultUiDeps());
+  }
+
   function handleThemeToggle() {
     theme = toggleTheme(theme);
     saveTheme(theme);
@@ -726,6 +731,7 @@
       onMove={handleMove}
       onRename={handleRename}
       onImportText={handleImportText}
+      onImportDocuments={handleImportDocuments}
     />
 
     {#if noteSession.selectedPath}
