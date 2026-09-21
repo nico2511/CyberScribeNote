@@ -38,11 +38,12 @@ Sur la [page Releases](https://github.com/nico2511/CyberScribeNote/releases) :
 
 | Asset | Contenu |
 |-------|---------|
-| **`CyberScribeNote-win.zip`** (recommandé) | `cyberscribe-note.exe` + `voice_worker.exe` — dézipper, lancer l’app |
+| **`CyberScribeNote-win.zip`** (recommandé) | `cyberscribe-note.exe` + `voice_worker.exe` + `tools/` (MarkItDown) — dézipper, lancer l’app |
 | `cyberscribe-note.exe` seul | App seule → dictée via **Python** si pas de sidecar à côté |
 | `voice_worker.exe` | Sidecar vocal (~190 Mo) à placer **dans le même dossier** que l’app |
 
 - Les **modèles Whisper** se téléchargent au premier usage dans `Documents/CyberScribeNote/models/`.
+- **Import PDF/Office** : Python 3.10+ + **Réglages → Import documents → Installer MarkItDown** (le dossier `tools/` doit rester à côté de l’exe).
 - Linux / macOS : pas de binaire prêt pour l’instant (build source + Python pour la voix).
 - Le worker est local (stdin/stdout, pas de serveur ouvert). Binaire non signé → SmartScreen possible.
 
