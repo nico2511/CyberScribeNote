@@ -30,16 +30,19 @@ jobs:
       - name: Build app and voice sidecar
         run: npm run release:win
 
-      - name: Package zip (2 exe only)
+      - name: Package zip (app + voice + MarkItDown tools)
         shell: pwsh
         run: |
           $app = "src-tauri/target/release/cyberscribe-note.exe"
           $voice = "voice/voice_worker.exe"
           if (-not (Test-Path $app)) { throw "Missing $app" }
           if (-not (Test-Path $voice)) { throw "Missing $voice" }
-          New-Item -ItemType Directory -Force -Path dist-release | Out-Null
+          if (-not (Test-Path "tools/markitdown_convert.py")) { throw "Missing tools/markitdown_convert.py" }
+          New-Item -ItemType Directory -Force -Path dist-release/tools | Out-Null
           Copy-Item $app dist-release/
           Copy-Item $voice dist-release/
+          Copy-Item tools/markitdown_convert.py dist-release/tools/
+          Copy-Item tools/requirements-markitdown.txt dist-release/tools/
           Compress-Archive -Path dist-release/* -DestinationPath CyberScribeNote-win.zip -Force
 
       - name: Upload release asset

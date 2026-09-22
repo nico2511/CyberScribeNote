@@ -18,6 +18,7 @@
     onMove: (sourcePath: string, destinationParent: string) => void | Promise<void>;
     onRename?: (path: string) => void | Promise<void>;
     onImportText?: () => void | Promise<void>;
+    onImportDocuments?: () => void | Promise<void>;
   }
 
   let {
@@ -32,6 +33,7 @@
     onMove,
     onRename,
     onImportText,
+    onImportDocuments,
   }: Props = $props();
 
   let dragActive = $state(false);
@@ -84,6 +86,16 @@
         onclick={() => onImportText()}
       >
         .txt
+      </button>
+    {/if}
+    {#if onImportDocuments}
+      <button
+        type="button"
+        class="btn-ghost rounded-2xl px-2 py-1.5 text-xs"
+        title="Importer PDF / Word / HTML… → .md (MarkItDown)"
+        onclick={() => onImportDocuments()}
+      >
+        Doc
       </button>
     {/if}
     <button

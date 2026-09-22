@@ -124,6 +124,14 @@ export interface VoiceDepsStatus {
   error?: string;
 }
 
+export interface MarkitdownStatus {
+  pythonFound: boolean;
+  pythonPath: string;
+  depsOk: boolean;
+  scriptPath: string;
+  error?: string;
+}
+
 export interface VoiceTranscript {
   text: string;
 }

@@ -49,7 +49,7 @@ pub fn vault_root() -> Result<PathBuf, String> {
 
 pub use crate::vault_path::is_safe_vault_relative;
 
-fn resolve_path(relative: &str) -> Result<PathBuf, String> {
+pub(crate) fn resolve_path(relative: &str) -> Result<PathBuf, String> {
     if !is_safe_vault_relative(relative) {
         return Err("Accès refusé : chemin hors du vault".into());
     }
@@ -76,7 +76,7 @@ fn resolve_path(relative: &str) -> Result<PathBuf, String> {
     Ok(candidate)
 }
 
-fn ensure_vault() -> Result<PathBuf, String> {
+pub(crate) fn ensure_vault() -> Result<PathBuf, String> {
     let root = vault_root()?;
     fs::create_dir_all(root.join("media")).map_err(|e| e.to_string())?;
     fs::create_dir_all(root.join("assets")).map_err(|e| e.to_string())?;
@@ -278,7 +278,7 @@ fn read_dir_recursive(dir: &Path, root: &Path) -> Result<Vec<VaultEntry>, String
     Ok(entries)
 }
 
-fn sanitize_name(name: &str) -> Result<String, String> {
+pub(crate) fn sanitize_name(name: &str) -> Result<String, String> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
         return Err("Le nom ne peut pas être vide".into());

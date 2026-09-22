@@ -6,6 +6,7 @@
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
   import type {
     AppConfig,
+    MarkitdownStatus,
     OllamaDetect,
     OllamaStatus,
     PullProgress,
@@ -48,6 +49,7 @@
   let defaultVault = $state("");
   let currentVault = $state("");
   let voiceDeps = $state<VoiceDepsStatus | null>(null);
+  let markitdown = $state<MarkitdownStatus | null>(null);
   let voiceStatus = $state<VoiceStatus | null>(null);
   let whisperCache = $state<WhisperCacheEntry[]>([]);
   let whisperModelsDir = $state("");
@@ -136,7 +138,7 @@
     if (!silent) loading = true;
     error = "";
     try {
-      const [d, s, rec, vd, vs, wdir, wcache, rag] = await Promise.all([
+      const [d, s, rec, vd, vs, wdir, wcache, rag, md] = await Promise.all([
         invoke<OllamaDetect>("ollama_detect"),
         invoke<OllamaStatus>("ollama_status"),
         invoke<RecommendedModel[]>("ollama_recommended_models"),
@@ -145,6 +147,7 @@
         invoke<string>("voice_models_dir"),
         invoke<WhisperCacheEntry[]>("voice_list_whisper_cache"),
         invoke<RagStatus>("rag_status").catch(() => null),
+        invoke<MarkitdownStatus>("markitdown_status").catch(() => null),
       ]);
       detect = d;
       status = s;
@@ -154,6 +157,7 @@
       whisperModelsDir = wdir;
       whisperCache = wcache;
       ragStatus = rag;
+      markitdown = md;
       if (status) onOllamaUpdated(status);
     } catch (e) {
       if (!silent) error = String(e);
@@ -266,6 +270,27 @@
       await refreshAsync(true);
     } catch (e) {
       error = String(e);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function installMarkitdownDeps() {
+    busy = true;
+    error = "";
+    message = "Installation de MarkItDown (pip)…";
+    try {
+      message = await invoke<string>("markitdown_install_deps");
+      notify({
+        kind: "success",
+        title: "MarkItDown",
+        message,
+        key: "markitdown-install",
+      });
+      await refreshAsync(true);
+    } catch (e) {
+      error = String(e);
+      notify({ kind: "error", title: "MarkItDown", message: error, key: "markitdown-install" });
     } finally {
       busy = false;
     }
@@ -692,6 +717,60 @@
             onclick={reindexRag}
           >
             {ragBusy ? "Indexation…" : "Indexer / réindexer le vault"}
+          </button>
+        </section>
+
+        <!-- Import documents (MarkItDown) -->
+        <section class="space-y-3 border-t border-border pt-4">
+          <h3 class="text-sm font-semibold">Import documents → Markdown</h3>
+          <p class="text-[11px] leading-relaxed text-text-muted">
+            Conversion via
+            <a
+              class="underline hover:text-text"
+              href="https://github.com/microsoft/markitdown"
+              onclick={(e) => {
+                e.preventDefault();
+                void openUrl("https://github.com/microsoft/markitdown");
+              }}>Microsoft MarkItDown</a
+            >
+            (PDF, Word, PowerPoint, Excel, HTML, EPUB…). Nécessite Python 3.10+ et le paquet pip
+            (séparé de la voix). Depuis la barre latérale : bouton <strong>Doc</strong>.
+          </p>
+          <div class="rounded-2xl border border-border bg-surface-muted p-4 text-sm">
+            <div class="flex justify-between py-1">
+              <span class="text-text-muted">Python</span>
+              <span class="truncate text-right text-[11px]" title={markitdown?.pythonPath}>
+                {markitdown?.pythonFound ? markitdown.pythonPath : "Non trouvé"}
+              </span>
+            </div>
+            <div class="flex justify-between py-1">
+              <span class="text-text-muted">MarkItDown</span>
+              <span class={markitdown?.depsOk ? "text-accent-mint" : "text-danger"}>
+                {markitdown?.depsOk ? "Installé ✓" : "Manquant"}
+              </span>
+            </div>
+            <div class="flex justify-between gap-2 py-1">
+              <span class="shrink-0 text-text-muted">Script</span>
+              <span
+                class="truncate text-right text-[11px]"
+                title={markitdown?.scriptPath}
+              >
+                {markitdown?.scriptPath
+                  ? markitdown.scriptPath.split(/[/\\]/).pop()
+                  : "Introuvable"}
+              </span>
+            </div>
+          </div>
+          {#if markitdown?.error}
+            <p class="rounded-xl bg-danger/10 px-3 py-2 text-[11px] text-danger">{markitdown.error}</p>
+          {/if}
+          <button
+            type="button"
+            class="rounded-2xl bg-accent-mint/40 px-3 py-2 text-xs font-medium hover:bg-accent-mint/60 disabled:opacity-50"
+            disabled={busy || !markitdown?.pythonFound}
+            onclick={installMarkitdownDeps}
+          >
+            {markitdown?.depsOk ? "Réinstaller MarkItDown (pip)" : "Installer MarkItDown (pip)"}
           </button>
         </section>
 

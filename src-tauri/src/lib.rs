@@ -10,16 +10,16 @@ mod voice_hotkey;
 
 use commands::{
     create_folder, create_note, delete_item, export_note, get_app_config,
-    import_image, import_image_bytes, import_text_files, init_vault, default_vault_path, set_vault_path,
-    list_vault, list_note_history, read_note_version, restore_note_version, sync_txt_notes,
-    move_vault_item, rename_note, ollama_delete_model,
+    import_documents, import_image, import_image_bytes, import_text_files, init_vault,
+    default_vault_path, set_vault_path, list_vault, list_note_history, read_note_version,
+    restore_note_version, sync_txt_notes, move_vault_item, rename_note, ollama_delete_model,
     ollama_detect, ollama_install, ollama_pull_model, ollama_recommended_models,
     ollama_start_service, ollama_status, ollama_proactive_suggest, ollama_custom_prompt,
     ollama_summarize_note, ollama_transform_note, rag_query, rag_reindex, rag_status, read_note,
     save_app_config, search_vault, setup_voice, voice_check_deps,
     voice_get_status, voice_install_deps, voice_list_whisper_cache, voice_models_dir,
     voice_preload_whisper_model, voice_restart, voice_toggle, write_note, VoiceState,
-    fetch_page_meta,
+    fetch_page_meta, markitdown_install_deps, markitdown_status,
 };
 
 use std::sync::{Arc, Mutex};
@@ -81,6 +81,9 @@ pub fn run() {
             import_image,
             import_image_bytes,
             import_text_files,
+            import_documents,
+            markitdown_status,
+            markitdown_install_deps,
             sync_txt_notes,
             list_note_history,
             read_note_version,

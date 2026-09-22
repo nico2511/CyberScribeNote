@@ -29,7 +29,7 @@ Basé sur le plan [CyberScribe Notes](Docs/CyberScribe_Notes_Plan.md) et inspir�
 - Panneau **Réglages** (Ctrl+,) : vault, sync TXT, historique, Ollama, voix (sidecar vs Python)
 - Images à la position du curseur (`_media/` par note)
 - **Dictée PTT** : sidecar `voice_worker.exe` (priorité, VAD Silero inclus) ou Python
-- Single-instance · Export `.md` · Import multi `.txt`
+- Single-instance · Export `.md` · Import multi `.txt` · Import documents (PDF/Office/HTML → MD via [MarkItDown](https://github.com/microsoft/markitdown))
 - Durcissement sécurité Tauri (sanitize Markdown, IPC `.md`, asset scope vault, SSRF)
 
 ## Téléchargement (Windows)
@@ -38,11 +38,12 @@ Sur la [page Releases](https://github.com/nico2511/CyberScribeNote/releases) :
 
 | Asset | Contenu |
 |-------|---------|
-| **`CyberScribeNote-win.zip`** (recommandé) | `cyberscribe-note.exe` + `voice_worker.exe` — dézipper, lancer l’app |
+| **`CyberScribeNote-win.zip`** (recommandé) | `cyberscribe-note.exe` + `voice_worker.exe` + `tools/` (MarkItDown) — dézipper, lancer l’app |
 | `cyberscribe-note.exe` seul | App seule → dictée via **Python** si pas de sidecar à côté |
 | `voice_worker.exe` | Sidecar vocal (~190 Mo) à placer **dans le même dossier** que l’app |
 
 - Les **modèles Whisper** se téléchargent au premier usage dans `Documents/CyberScribeNote/models/`.
+- **Import PDF/Office** : Python 3.10+ + **Réglages → Import documents → Installer MarkItDown** (le dossier `tools/` doit rester à côté de l’exe).
 - Linux / macOS : pas de binaire prêt pour l’instant (build source + Python pour la voix).
 - Le worker est local (stdin/stdout, pas de serveur ouvert). Binaire non signé → SmartScreen possible.
 
@@ -81,6 +82,16 @@ pip install -r voice/requirements.txt
 Ou via l’app : **Réglages → Voix → Installer dépendances (pip)** (uniquement en mode Python).
 
 Logs worker : `Documents/CyberScribeNote/voice_worker.log`.
+
+### Import documents (MarkItDown)
+
+Conversion PDF / Word / PowerPoint / Excel / HTML / EPUB → note `.md` (bouton **Doc** dans la barre latérale).
+
+```bash
+pip install -r tools/requirements-markitdown.txt
+```
+
+Ou via l’app : **Réglages → Import documents → Installer MarkItDown (pip)** (Python 3.10+ requis).
 
 ## Démarrage
 
@@ -145,7 +156,11 @@ Sortie : `src-tauri/target/release/cyberscribe-note.exe`
 3. ~~Sécurité Tauri, rename, RAG par vault, stores, wizard Ollama~~ (v0.5)
 4. ~~Refactor audit + indexer dossier + CI release Windows~~ (v0.5.5)
 5. ~~Fix démarrage Ollama Windows (chemin modèles / pas de 2e serve)~~ (v0.5.6)
+<<<<<<< HEAD
+6. Import documents MarkItDown (PDF / Office → MD)
+=======
 6. ~~Auto-start Ollama + prompts custom extraction (favoris)~~ (v0.5.7)
+>>>>>>> origin/main
 7. Templates / graph · E2E Tauri
 8. Bundling NSIS + updater (+ Authenticode) · builds Linux
 
