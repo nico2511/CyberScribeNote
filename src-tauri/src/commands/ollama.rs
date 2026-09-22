@@ -94,6 +94,30 @@ fn looks_like_format_instruction(instruction: &str) -> bool {
     .any(|k| t.contains(k))
 }
 
+/// Extract / list / rewrite-as-derived-output — must not force "keep whole document".
+fn looks_like_derived_instruction(instruction: &str) -> bool {
+    let t = instruction.to_lowercase();
+    [
+        "extrais",
+        "extraire",
+        "extraction",
+        "liste de",
+        "liste des",
+        "sous forme de liste",
+        "en liste",
+        "tous les liens",
+        "toutes les urls",
+        "toutes les url",
+        "tous les url",
+        "extract all",
+        "list all",
+        "as a list",
+        "bullet list",
+    ]
+    .iter()
+    .any(|k| t.contains(k))
+}
+
 #[derive(Debug, Deserialize)]
 struct OllamaResponse {
     response: String,
@@ -490,6 +514,38 @@ pub fn ollama_install() -> Result<String, String> {
     }
 }
 
+#[cfg(windows)]
+fn is_ollama_gui_exe(path: &std::path::Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.eq_ignore_ascii_case("Ollama.exe"))
+        .unwrap_or(false)
+}
+
+/// Launch the Windows tray app detached (`start`) so the parent can exit cleanly.
+#[cfg(windows)]
+fn launch_ollama_gui(exe: &std::path::Path) -> Result<(), String> {
+    let path = exe.to_string_lossy();
+    // CREATE_NO_WINDOW on cmd only — the GUI itself must stay visible/tray.
+    std::process::Command::new("cmd")
+        .args(["/C", "start", "", path.as_ref()])
+        .creation_flags(0x08000000)
+        .spawn()
+        .map_err(|e| format!("Impossible de lancer Ollama : {e}"))?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn launch_ollama_serve() -> Result<(), String> {
+    let mut serve = std::process::Command::new("ollama");
+    serve.arg("serve");
+    serve.creation_flags(0x08000000);
+    serve
+        .spawn()
+        .map_err(|e| format!("Impossible de démarrer ollama serve : {e}"))?;
+    Ok(())
+}
+
 #[tauri::command]
 pub fn ollama_start_service() -> Result<String, String> {
     if !cli_installed() && find_ollama_app().is_none() {
@@ -498,27 +554,29 @@ pub fn ollama_start_service() -> Result<String, String> {
 
     #[cfg(windows)]
     {
-        // Prefer the desktop app only. Spawning a second bare `ollama serve`
-        // races for :11434 and often lands pulls in the default `%USERPROFILE%\.ollama`
-        // while the tray app's Model location / OLLAMA_MODELS is ignored.
+        // Prefer the desktop tray app only (never tray + bare serve together —
+        // that races for :11434 and often lands pulls in %USERPROFILE%\.ollama).
+        // Important: find_ollama_app() may return the CLI `ollama.exe`; spawning
+        // that without `serve` exits immediately and leaves the API down.
         if let Some(exe) = find_ollama_app() {
-            std::process::Command::new(&exe)
-                .spawn()
-                .map_err(|e| format!("Impossible de lancer Ollama : {e}"))?;
-            return Ok("Ollama lancé. Attendez quelques secondes…".into());
+            if is_ollama_gui_exe(&exe) {
+                launch_ollama_gui(&exe)?;
+                return Ok("Ollama lancé. Attendez quelques secondes…".into());
+            }
         }
 
         if cli_installed() {
-            let mut serve = std::process::Command::new("ollama");
-            serve.arg("serve");
-            serve.creation_flags(0x08000000);
-            serve
-                .spawn()
-                .map_err(|e| format!("Impossible de démarrer ollama serve : {e}"))?;
+            launch_ollama_serve()?;
             return Ok("ollama serve lancé. Attendez quelques secondes…".into());
         }
 
-        return Err("Ollama introuvable.".into());
+        // Last resort: shell association / Start Menu entry.
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", "ollama", "app"])
+            .creation_flags(0x08000000)
+            .spawn()
+            .map_err(|e| format!("Impossible de lancer Ollama : {e}"))?;
+        return Ok("Ollama lancé. Attendez quelques secondes…".into());
     }
 
     #[cfg(not(windows))]
@@ -590,6 +648,22 @@ fn find_ollama_app() -> Option<std::path::PathBuf> {
         })
 }
 
+fn context_window_for_prompt(prompt_len: usize) -> u32 {
+    // Rough chars→tokens; bump ctx for long notes (bookmarks HTML, dumps…).
+    let approx_tokens = (prompt_len / 3).max(2048) as u32;
+    approx_tokens.clamp(8192, 32768)
+}
+
+fn http_timeout_for_prompt(prompt_len: usize) -> std::time::Duration {
+    if prompt_len > 40_000 {
+        std::time::Duration::from_secs(420)
+    } else if prompt_len > 12_000 {
+        std::time::Duration::from_secs(300)
+    } else {
+        std::time::Duration::from_secs(180)
+    }
+}
+
 async fn ollama_generate_with(
     prompt: String,
     model: Option<String>,
@@ -597,12 +671,14 @@ async fn ollama_generate_with(
 ) -> Result<String, String> {
     let config = load_config();
     let host = config.ollama_host.trim_end_matches('/').to_string();
+    let prompt_len = prompt.len();
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(180))
+        .timeout(http_timeout_for_prompt(prompt_len))
         .build()
         .map_err(|e| e.to_string())?;
 
     let model = model.unwrap_or(config.selected_model);
+    let num_ctx = context_window_for_prompt(prompt_len);
 
     let body = OllamaRequest {
         model,
@@ -612,7 +688,7 @@ async fn ollama_generate_with(
         options: Some(OllamaGenOptions {
             temperature: params.temperature,
             top_p: Some(0.9),
-            num_ctx: Some(8192),
+            num_ctx: Some(num_ctx),
         }),
     };
 
@@ -646,6 +722,7 @@ pub async fn ollama_custom_prompt(
 
     let context_block = format_note_context(note_context.as_deref());
     let rag_block = format_rag_block(rag_context.as_deref());
+    let derived = looks_like_derived_instruction(instruction);
     let format_rules = if looks_like_format_instruction(instruction) {
         "\nRègles Markdown (obligatoires) :\n\
          - Répare uniquement la structure (titres, listes, liens, blocs de code).\n\
@@ -658,6 +735,11 @@ pub async fn ollama_custom_prompt(
          - Table des matières / outline = liste de liens Markdown HORS des blocs de code.\n\
          - Un résumé éventuel = section séparée, jamais collé en fin de ligne.\n\
          - Si tu entoures la réponse, une seule fence ```markdown autour du document entier.\n"
+    } else if derived {
+        "\nLa consigne demande un résultat dérivé (liste, extraction, synthèse structurée).\n\
+         - Produis UNIQUEMENT le résultat demandé (ex. liste de liens), pas le document source.\n\
+         - N'invente aucun URL, titre ou fait absent du texte source.\n\
+         - Si le texte est long (favoris HTML, dump), traite-le en entier autant que possible.\n"
     } else {
         "\nNe remplace pas le texte par un autre document. Conserve le sujet et les informations.\n"
     };
@@ -856,7 +938,9 @@ fn format_rag_block(rag_context: Option<&str>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::looks_like_format_instruction;
+    use super::{
+        context_window_for_prompt, looks_like_derived_instruction, looks_like_format_instruction,
+    };
 
     #[test]
     fn format_instruction_detects_markdown() {
@@ -864,6 +948,22 @@ mod tests {
             "Mets en forme correctement les balises markdown"
         ));
         assert!(!looks_like_format_instruction("Raccourcis en deux phrases"));
+    }
+
+    #[test]
+    fn derived_instruction_detects_link_extraction() {
+        assert!(looks_like_derived_instruction(
+            "Extrais tous les liens et fais-moi une liste"
+        ));
+        assert!(looks_like_derived_instruction("List all URLs as a list"));
+        assert!(!looks_like_derived_instruction("Répare le markdown"));
+    }
+
+    #[test]
+    fn context_window_scales_with_prompt() {
+        assert_eq!(context_window_for_prompt(1000), 8192);
+        assert!(context_window_for_prompt(60_000) > 8192);
+        assert_eq!(context_window_for_prompt(200_000), 32768);
     }
 }
 

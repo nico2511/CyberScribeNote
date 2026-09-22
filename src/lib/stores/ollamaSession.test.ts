@@ -62,4 +62,44 @@ describe("ollamaSession", () => {
     expect(ok).toBe(true);
     expect(onStatus).not.toHaveBeenCalled();
   });
+
+  it("ensureOllamaRunning starts the service when down then becomes available", async () => {
+    vi.useFakeTimers();
+    let statusCalls = 0;
+    const start = vi.fn(async () => "started");
+    setInvokeImpl(
+      (async (cmd) => {
+        if (cmd === "ollama_status") {
+          statusCalls += 1;
+          return {
+            ...ollamaSession.status,
+            available: statusCalls >= 3,
+            selectedModel: "llama3.2",
+            models: ["llama3.2"],
+          };
+        }
+        if (cmd === "ollama_detect") {
+          return {
+            cliInstalled: true,
+            serviceRunning: false,
+            host: "http://127.0.0.1:11434",
+            selectedModel: "llama3.2",
+            networkMode: "local",
+            isLocalhost: true,
+          };
+        }
+        if (cmd === "ollama_start_service") {
+          return start();
+        }
+        throw new Error(`unexpected ${cmd}`);
+      }) as typeof tauriInvoke,
+    );
+
+    const pending = ensureOllamaRunning(true);
+    await vi.runAllTimersAsync();
+    const ok = await pending;
+    expect(ok).toBe(true);
+    expect(start).toHaveBeenCalledOnce();
+    vi.useRealTimers();
+  });
 });

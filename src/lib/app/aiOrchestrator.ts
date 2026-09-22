@@ -1,14 +1,19 @@
 import { invoke } from "$lib/tauri/api";
 import { buildAiProposal, buildLocalCorrection } from "$lib/ai/buildProposal";
 import { fetchRagContext } from "$lib/ai/rag";
-import { instructionWantsVaultContext, isGroundedAppendix, isGroundedTransform } from "$lib/ai/grounding";
+import {
+  instructionIsDerivedOutput,
+  instructionWantsVaultContext,
+  isGroundedAppendix,
+  isGroundedTransform,
+} from "$lib/ai/grounding";
 import {
   extractExistingSummary,
   formatSummaryAppendix,
   isDuplicateSummary,
   translateLangLabel,
 } from "$lib/ai/languages";
-import { isLinkOnlyNote } from "$lib/ai/links";
+import { formatExtractedLinksList, isLinkOnlyNote } from "$lib/ai/links";
 import { sanitizeAiOutput } from "$lib/ai/sanitize";
 import {
   extractUrls,
@@ -519,6 +524,36 @@ export async function runCustomPrompt(deps: AiOrchestratorDeps, instruction: str
     return;
   }
 
+  const trimmedInstruction = instruction.trim();
+  const scope = sel ? "sélection" : "note";
+  const label =
+    trimmedInstruction.length > 42
+      ? `Custom : ${trimmedInstruction.slice(0, 39)}…`
+      : `Custom : ${trimmedInstruction}`;
+
+  // Favoris HTML / dumps de liens : extraction locale fiable (sans LLM / timeout / filtre).
+  if (/\b(lien|liens|urls?|http)\b/i.test(trimmedInstruction) && instructionIsDerivedOutput(trimmedInstruction)) {
+    const localList = formatExtractedLinksList(targetText);
+    if (localList) {
+      aiQueue.companionOpen = true;
+      pushSuggestion({
+        action: "custom",
+        label,
+        scope,
+        proposedText: localList,
+        originalText: targetText,
+        source: "manual",
+        notePath: pathAtStart,
+        reason: `${trimmedInstruction} (extraction locale)`,
+        selection: sel ? { start: sel.start, end: sel.end, text: sel.text } : undefined,
+      });
+      deps.setStatus(
+        `Liste de liens prête (${localList.split("\n").length} entrées) — appliquez ou ignorez.`,
+      );
+      return;
+    }
+  }
+
   if (!deps.ollamaAvailable) {
     const started = await deps.ensureOllamaRunning(true);
     if (!started) {
@@ -530,13 +565,12 @@ export async function runCustomPrompt(deps: AiOrchestratorDeps, instruction: str
 
   aiQueue.aiLoading = true;
   aiQueue.companionOpen = true;
-  const scope = sel ? "sélection" : "note";
   deps.setStatus(`Prompt custom (${scope}) — en cours…`);
 
   try {
-    const wantsRag = instructionWantsVaultContext(instruction);
+    const wantsRag = instructionWantsVaultContext(trimmedInstruction);
     const result = await invoke<string>("ollama_custom_prompt", {
-      instruction: instruction.trim(),
+      instruction: trimmedInstruction,
       content: targetText,
       model: deps.activeModel,
       noteContext: deps.noteContext.trim() || null,
@@ -547,7 +581,7 @@ export async function runCustomPrompt(deps: AiOrchestratorDeps, instruction: str
 
     if (!stillCurrentAiRequest(epoch, pathAtStart)) return;
 
-    const proposal = buildAiProposal("custom", targetText, result, instruction.trim());
+    const proposal = buildAiProposal("custom", targetText, result, trimmedInstruction);
     if (!proposal) {
       deps.setStatus(
         result.trim()
@@ -557,11 +591,6 @@ export async function runCustomPrompt(deps: AiOrchestratorDeps, instruction: str
       return;
     }
 
-    const label =
-      instruction.trim().length > 42
-        ? `Custom : ${instruction.trim().slice(0, 39)}…`
-        : `Custom : ${instruction.trim()}`;
-
     pushSuggestion({
       action: "custom",
       label,
@@ -570,7 +599,7 @@ export async function runCustomPrompt(deps: AiOrchestratorDeps, instruction: str
       originalText: targetText,
       source: "manual",
       notePath: pathAtStart,
-      reason: instruction.trim(),
+      reason: trimmedInstruction,
       selection: sel ? { start: sel.start, end: sel.end, text: sel.text } : undefined,
     });
     deps.setStatus("Suggestion custom prête — appliquez ou ignorez.");

@@ -136,7 +136,8 @@ Sortie : `src-tauri/target/release/cyberscribe-note.exe`
 
 ### Ollama
 - Réglages → démarrer / tirer un modèle. RAG : aussi `nomic-embed-text`, puis réindexer.
-- Chemin des modèles : géré par Ollama (`OLLAMA_MODELS` + sous Windows *Settings → Model location*). CyberScribe ne stocke pas les LLM ; sous Windows elle lance uniquement l’app tray (plus de second `ollama serve`).
+- Au démarrage, l’app relance Ollama s’il est arrêté (sous Windows : app tray `Ollama.exe` ; `ollama serve` seulement si le CLI est seul).
+- Chemin des modèles : géré par Ollama (`OLLAMA_MODELS` + sous Windows *Settings → Model location*). CyberScribe ne stocke pas les LLM ; ne lance pas tray + `serve` en même temps.
 
 ## Stack
 
@@ -155,7 +156,11 @@ Sortie : `src-tauri/target/release/cyberscribe-note.exe`
 3. ~~Sécurité Tauri, rename, RAG par vault, stores, wizard Ollama~~ (v0.5)
 4. ~~Refactor audit + indexer dossier + CI release Windows~~ (v0.5.5)
 5. ~~Fix démarrage Ollama Windows (chemin modèles / pas de 2e serve)~~ (v0.5.6)
+<<<<<<< HEAD
 6. Import documents MarkItDown (PDF / Office → MD)
+=======
+6. ~~Auto-start Ollama + prompts custom extraction (favoris)~~ (v0.5.7)
+>>>>>>> origin/main
 7. Templates / graph · E2E Tauri
 8. Bundling NSIS + updater (+ Authenticode) · builds Linux
 

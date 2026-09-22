@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  instructionIsDerivedOutput,
   instructionRequiresFidelity,
   instructionWantsVaultContext,
   isGroundedTransform,
@@ -83,6 +84,13 @@ describe("instruction helpers", () => {
     expect(instructionRequiresFidelity("invente une histoire")).toBe(false);
   });
 
+  it("skips fidelity for extraction / list prompts", () => {
+    expect(
+      instructionRequiresFidelity("Extrais tous les liens et fais-moi une liste"),
+    ).toBe(false);
+    expect(instructionIsDerivedOutput("sous forme de liste")).toBe(true);
+  });
+
   it("detects explicit vault context requests", () => {
     expect(instructionWantsVaultContext("croise avec mes autres notes")).toBe(true);
     expect(instructionWantsVaultContext("Répare le markdown")).toBe(false);
@@ -107,6 +115,26 @@ describe("sanitizeAiOutput", () => {
 describe("buildAiProposal custom", () => {
   it("rejects a hallucinated recipe", () => {
     expect(buildAiProposal("custom", DOCKER_NOTE, RECIPE, "Répare le markdown")).toBeNull();
+  });
+
+  it("accepts a derived link list from a dense source", () => {
+    const bookmarks = `<!DOCTYPE NETSCAPE-Bookmark-file-1>
+<DL>
+  <DT><A HREF="https://github.com/nico2511/CyberScribeNote">CyberScribe</A>
+  <DT><A HREF="https://ollama.com/download">Ollama</A>
+  <DT><A HREF="https://example.com/docs/guide">Guide docs</A>
+</DL>`;
+    const list = `- [CyberScribe](https://github.com/nico2511/CyberScribeNote)
+- [Ollama](https://ollama.com/download)
+- [Guide docs](https://example.com/docs/guide)`;
+    const out = buildAiProposal(
+      "custom",
+      bookmarks,
+      list,
+      "Extrais tous les liens sous forme de liste",
+    );
+    expect(out).toContain("https://ollama.com/download");
+    expect(out).toContain("CyberScribe");
   });
 
   it("unwraps a TOC accidentally put in a code fence", () => {
