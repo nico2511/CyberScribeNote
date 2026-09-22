@@ -57,6 +57,10 @@ const STOP = new Set([
 const CREATIVE_RE =
   /\b(invente|imagine|histoire|po[eè]me|blague|fiction|r[eé]dige une recette)\b/i;
 
+/** Extraction / liste / résultat dérivé — le texte proposé n'est plus le document source. */
+const DERIVED_OUTPUT_RE =
+  /\b(extrais|extraire|extraction|extract(?:ion|s)?|liste(?:r)?|sous forme de liste|en liste|tous les liens|toutes les urls?|list all|as a list|bullet list)\b/i;
+
 const HIJACK_RE =
   /\b(ingr[eé]dients?|pr[eé]paration\b|cuisson|pr[eé]chauffe|faire revenir|sel et poivre|lorem ipsum)\b/i;
 
@@ -82,7 +86,15 @@ export function significantTokens(text: string): string[] {
 }
 
 export function instructionRequiresFidelity(instruction: string): boolean {
-  return !CREATIVE_RE.test(instruction);
+  if (CREATIVE_RE.test(instruction) || DERIVED_OUTPUT_RE.test(instruction)) {
+    return false;
+  }
+  return true;
+}
+
+/** True si le prompt demande un résultat dérivé (liste, extraction…), pas une réécriture fidèle. */
+export function instructionIsDerivedOutput(instruction: string): boolean {
+  return DERIVED_OUTPUT_RE.test(instruction);
 }
 
 export function instructionWantsVaultContext(instruction: string): boolean {
