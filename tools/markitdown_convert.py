@@ -4,6 +4,7 @@ Usage:
   python markitdown_convert.py <fichier>
 
 Écrit le Markdown sur stdout (UTF-8). Les erreurs vont sur stderr.
+Sous Windows, force UTF-8 pour éviter UnicodeEncodeError (cp1252).
 """
 
 from __future__ import annotations
@@ -11,7 +12,18 @@ from __future__ import annotations
 import sys
 
 
+def _force_utf8_stdio() -> None:
+    """Windows utilise souvent cp1252 pour la console — incompatible avec Ω, etc."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+
 def main() -> int:
+    _force_utf8_stdio()
+
     if len(sys.argv) < 2 or not sys.argv[1].strip():
         print("Usage: markitdown_convert.py <fichier>", file=sys.stderr)
         return 2
@@ -35,17 +47,25 @@ def main() -> int:
         print(f"Conversion MarkItDown échouée : {exc}", file=sys.stderr)
         return 1
 
-    text = (getattr(result, "text_content", None) or getattr(result, "markdown", None) or "")
+    text = getattr(result, "text_content", None) or getattr(result, "markdown", None) or ""
     if not isinstance(text, str):
         text = str(text)
     text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
     if not text:
-        print("Conversion vide — fichier non pris en charge ou sans contenu textuel.", file=sys.stderr)
+        print(
+            "Conversion vide — fichier non pris en charge ou sans contenu textuel.",
+            file=sys.stderr,
+        )
         return 1
 
-    sys.stdout.write(text)
-    if not text.endswith("\n"):
-        sys.stdout.write("\n")
+    # Toujours écrire des octets UTF-8 (évite cp1252 même si reconfigure échoue).
+    payload = text if text.endswith("\n") else text + "\n"
+    try:
+        sys.stdout.buffer.write(payload.encode("utf-8"))
+        sys.stdout.buffer.flush()
+    except Exception:
+        sys.stdout.write(payload)
+        sys.stdout.flush()
     return 0
 
 

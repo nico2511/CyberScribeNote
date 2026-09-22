@@ -101,7 +101,9 @@ pub fn convert_file_to_markdown(app: Option<&AppHandle>, source: &Path) -> Resul
     let script = convert_script(app)?;
 
     let mut cmd = hidden_command(&python);
-    cmd.arg(&script)
+    cmd.env("PYTHONIOENCODING", "utf-8")
+        .env("PYTHONUTF8", "1")
+        .arg(&script)
         .arg(source)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
