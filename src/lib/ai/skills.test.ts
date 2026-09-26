@@ -1,10 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { isGroundedAppendix } from "./grounding";
+import { routeSkillsFromIntent } from "./skillRouter";
 import {
   matchSkillFromText,
-  runSkillLocal,
+  NOTE_SKILLS,
+  proposedWikilinksStayInVault,
+  skillsInMenu,
+  titleIsSolid,
+  titleStaysOnTopic,
+  withProposedTitle,
   isEmptyLlmAppendix,
   parseTagsProposal,
+  type SkillTheme,
 } from "./skills";
 
 const DOCKER = `# Stacks Docker
@@ -18,6 +25,25 @@ services:
     image: postgres:16
 `;
 
+describe("NOTE_SKILLS themes", () => {
+  it("couvre les sept thèmes du cerveau sans retirer le groupe UI", () => {
+    const themes = new Set<SkillTheme>(NOTE_SKILLS.map((s) => s.theme));
+    expect(NOTE_SKILLS).toHaveLength(19);
+    expect(themes).toEqual(
+      new Set([
+        "prise-de-notes",
+        "analyse",
+        "ecriture",
+        "construction",
+        "amelioration",
+        "documents",
+        "connexion",
+      ]),
+    );
+    expect(NOTE_SKILLS.every((s) => s.group)).toBe(true);
+  });
+});
+
 describe("matchSkillFromText", () => {
   it("maps short voice phrases only", () => {
     expect(matchSkillFromText("sommaire")).toBe("outline");
@@ -30,6 +56,16 @@ describe("matchSkillFromText", () => {
     expect(matchSkillFromText("liees")).toBe("related");
     expect(matchSkillFromText("indexe dossier")).toBe("folderIndex");
     expect(matchSkillFromText("points cles")).toBe("keypoints");
+    expect(matchSkillFromText("taches")).toBe("keypoints");
+    expect(matchSkillFromText("todos")).toBe("keypoints");
+    expect(matchSkillFromText("actions")).toBe("actions");
+    expect(matchSkillFromText("questions")).toBe("questions");
+    expect(matchSkillFromText("decisions")).toBe("decisions");
+    expect(matchSkillFromText("clarifie")).toBe("clarify");
+    expect(matchSkillFromText("raccourcis")).toBe("shorten");
+    expect(matchSkillFromText("titre")).toBe("title");
+    expect(matchSkillFromText("relis")).toBe("proofread");
+    expect(matchSkillFromText("sources")).toBe("sources");
   });
 
   it("never hijacks a free-form formatting instruction", () => {
@@ -40,25 +76,51 @@ describe("matchSkillFromText", () => {
   });
 });
 
-describe("runSkillLocal", () => {
-  it("structures docker yaml without an LLM", () => {
-    const result = runSkillLocal("structure", DOCKER);
-    expect(result?.proposed).toContain("```yaml");
-    expect(result?.proposed).toContain("postgres:16");
+describe("menu court", () => {
+  it("n'affiche que neuf skills fréquentes", () => {
+    const ids = skillsInMenu().map((s) => s.id);
+    expect(ids).toEqual([
+      "structure",
+      "outline",
+      "enrich",
+      "keypoints",
+      "tags",
+      "template",
+      "brief",
+      "related",
+      "wikilinks",
+    ]);
   });
 
-  it("builds a daily template on empty notes", () => {
-    const result = runSkillLocal("template", "");
-    expect(result?.proposed).toContain("# Daily");
-    expect(result?.applyMode).toBe("replace");
+  it("laisse le routeur joindre Clarifier et Raccourcir hors menu", () => {
+    const plan = routeSkillsFromIntent({ text: "clarifie et raccourcis cette note" });
+    expect(plan?.skills).toEqual(["clarify", "shorten"]);
+    const menu = skillsInMenu().map((s) => s.id);
+    expect(menu).not.toContain("clarify");
+    expect(menu).not.toContain("shorten");
+  });
+});
+
+describe("catalogue LLM", () => {
+  it("fait rédiger chaque skill par Ollama", () => {
+    const missing = NOTE_SKILLS.filter(
+      (s) => !s.needsLlm || !(s.llmInstruction && s.llmInstruction.trim().length > 40),
+    ).map((s) => s.id);
+    expect(missing).toEqual([]);
   });
 
-  it("formats related notes from a RAG block", () => {
-    const result = runSkillLocal("related", "note", {
-      ragBlock: "- [[Autre]] — extrait",
-    });
-    expect(result?.proposed).toContain("## Notes liées");
-    expect(result?.proposed).toContain("[[Autre]]");
+  it("demande à Décisions de dire qu'il n'y en a pas, sans filet local", () => {
+    const decisions = NOTE_SKILLS.find((s) => s.id === "decisions");
+    expect(decisions?.llmInstruction).toMatch(/Aucune décision déjà posée/i);
+    expect(decisions?.needsLlm).toBe(true);
+  });
+});
+
+describe("proposedWikilinksStayInVault", () => {
+  it("accepte un titre du vault et refuse une note inventée", () => {
+    const note = "Voir le journal Docker demain.";
+    expect(proposedWikilinksStayInVault(note, "Voir le [[Docker]] demain.", ["Docker"])).toBe(true);
+    expect(proposedWikilinksStayInVault(note, "Voir [[Recette]] demain.", ["Docker"])).toBe(false);
   });
 });
 
@@ -86,9 +148,23 @@ describe("isGroundedAppendix", () => {
   });
 });
 
+describe("title helpers", () => {
+  it("laisse un titre déjà solide et pose un titre ancré", () => {
+    const solid = "# Stacks Docker\n\nHomepage nginx et postgres.";
+    expect(titleIsSolid(solid)).toBe(true);
+    expect(titleIsSolid("# Note\n\nHomepage nginx et postgres.")).toBe(false);
+    expect(titleStaysOnTopic(solid, "Stacks Docker nginx")).toBe(true);
+    expect(titleStaysOnTopic(solid, "Recette de soupe")).toBe(false);
+    const next = withProposedTitle("# Note\n\nHomepage nginx.", "Homepage nginx");
+    expect(next.startsWith("# Homepage nginx")).toBe(true);
+    expect(next).toContain("Homepage nginx.");
+  });
+});
+
 describe("isEmptyLlmAppendix", () => {
   it("detects empty task replies", () => {
     expect(isEmptyLlmAppendix("(aucune tâche)")).toBe(true);
     expect(isEmptyLlmAppendix("## Tâches\n\n- [ ] relancer nginx")).toBe(false);
+    expect(isEmptyLlmAppendix("## Actions\n\n(aucune action déjà mentionnée)")).toBe(true);
   });
 });

@@ -1,6 +1,8 @@
 import { extractOutline } from "$lib/markdown/bridge";
 import { bodyHasTypoLines } from "$lib/note/scanTypos";
 import { extractUrls, isLinkOnlyNote } from "$lib/ai/links";
+import { hasMarkdownSection } from "$lib/ai/skills";
+import { routeSkillsFromIntent } from "$lib/ai/skillRouter";
 import type { SkillId } from "$lib/ai/skills";
 
 export type BuddyMood = "idle" | "listen" | "think" | "idea" | "ok" | "warn";
@@ -8,6 +10,8 @@ export type BuddyMood = "idle" | "listen" | "think" | "idea" | "ok" | "warn";
 export type BuddyAction =
   | { kind: "open_companion" }
   | { kind: "skill"; skillId: SkillId }
+  /** Plan combinable : skills dans l'ordre du routeur. */
+  | { kind: "skill_plan"; skillIds: SkillId[] }
   | { kind: "dismiss" };
 
 export interface BuddyTip {
@@ -74,6 +78,21 @@ function hasBareComposeFence(md: string): boolean {
 
 function hasSommaire(md: string): boolean {
   return /^##\s+(Sommaire|Table des mati[eè]res|TOC)\s*$/im.test(md);
+}
+
+function hasBriefSection(md: string): boolean {
+  return /^##\s+(Brief|R[eé]sum[eé]|TL;?DR)\b/im.test(md);
+}
+
+function hasKeypointsSection(md: string): boolean {
+  return /^##\s+Points cl[eé]s\b/im.test(md);
+}
+
+/** Pipeline d'analyse (points clés → brief → tags), figé par le routeur. */
+function analysePlanIds(): SkillId[] | null {
+  const plan = routeSkillsFromIntent({ text: "analyse cette note" });
+  if (!plan || plan.skills.length < 2) return null;
+  return plan.skills;
 }
 
 export function scanBuddyTip(input: BuddyScanInput): BuddyTip | null {
@@ -193,6 +212,52 @@ export function scanBuddyTip(input: BuddyScanInput): BuddyTip | null {
     };
   }
 
+  const noTags = !/tags:\s*\[/i.test(body);
+  const analyseIds = analysePlanIds();
+  if (
+    analyseIds &&
+    body.length > 520 &&
+    noTags &&
+    !hasBriefSection(body) &&
+    !hasKeypointsSection(body)
+  ) {
+    return {
+      id: "analyse-plan",
+      mood: "idea",
+      message: "Note longue — points clés, brief, puis tags ?",
+      actionLabel: "Enchaîner",
+      action: { kind: "skill_plan", skillIds: analyseIds },
+      priority: 48,
+    };
+  }
+
+  if (extractUrls(body).length >= 2 && !hasMarkdownSection(body, "Sources")) {
+    return {
+      id: "sources",
+      mood: "idea",
+      message: "Plusieurs liens — je peux lister les sources.",
+      actionLabel: "Sources",
+      action: { kind: "skill", skillId: "sources" },
+      priority: 46,
+    };
+  }
+
+  if (
+    hasBriefSection(body) &&
+    body.length > 360 &&
+    !hasMarkdownSection(body, "Décisions") &&
+    /\b(compte[\s-]*rendu|r[eé]union)\b/i.test(body)
+  ) {
+    return {
+      id: "decisions",
+      mood: "idea",
+      message: "Compte rendu sans décisions — je peux les extraire.",
+      actionLabel: "Décisions",
+      action: { kind: "skill", skillId: "decisions" },
+      priority: 44,
+    };
+  }
+
   if (input.hasRelated && body.length > 120) {
     return {
       id: "related",
@@ -200,7 +265,7 @@ export function scanBuddyTip(input: BuddyScanInput): BuddyTip | null {
       message: "Des notes du vault semblent proches.",
       actionLabel: "Liées",
       action: { kind: "skill", skillId: "related" },
-      priority: 52,
+      priority: 36,
     };
   }
 
@@ -226,7 +291,7 @@ export function scanBuddyTip(input: BuddyScanInput): BuddyTip | null {
     };
   }
 
-  if (body.length > 280 && !/tags:\s*\[/i.test(body)) {
+  if (body.length > 280 && noTags) {
     return {
       id: "tags",
       mood: "idea",

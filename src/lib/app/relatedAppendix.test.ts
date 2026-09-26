@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatRelatedAppendix } from "./relatedAppendix";
+import { formatRelatedAppendix, relatedProposalStaysOnContext } from "./relatedAppendix";
 
 describe("formatRelatedAppendix", () => {
   it("formats RAG hits as wikilink bullets", () => {
@@ -16,5 +16,14 @@ Extrait utile pour le lien`;
   it("returns empty for blank input", () => {
     expect(formatRelatedAppendix("")).toBe("");
     expect(formatRelatedAppendix("   ")).toBe("");
+  });
+
+  it("n'accepte un wikilien que s'il est dans le contexte", () => {
+    const ctx = "- [[Autre]] — extrait du vault";
+    expect(relatedProposalStaysOnContext("## Notes liées\n\n- [[Autre]] — extrait", ctx)).toBe(
+      true,
+    );
+    expect(relatedProposalStaysOnContext("## Notes liées\n\n- [[Invente]]", ctx)).toBe(false);
+    expect(relatedProposalStaysOnContext("Aucune note liée pertinente.", ctx)).toBe(false);
   });
 });

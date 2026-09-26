@@ -24,7 +24,8 @@ Basé sur le plan [CyberScribe Notes](Docs/CyberScribe_Notes_Plan.md) et inspir�
 - **Compagnon IA** + menu **IA ▾** (résumer / reformuler / corriger / traduire / skills)
 - Skills : Structurer, Sommaire, Lien (page / README GitHub), Points clés, Tags, Template, Brief, Plan, Notes liées (RAG), Wikiliens
 - **RAG par vault** (`.rag/index.json` v2, réindex incrémentale)
-- **Scribe** : tips + analyse de sélection ; dictée dans le prompt custom
+- **Scribe** : tips, plans multi-skills (cerveau) et analyse de sélection ; dictée dans le prompt custom
+- **Cerveau** : routeur de skills combinables hors menu IA ▾ — [Docs/Scribe_Cerveau_Skills.md](Docs/Scribe_Cerveau_Skills.md)
 - Correction typo locale + Ollama / RAG optionnel
 - Panneau **Réglages** (Ctrl+,) : vault, sync TXT, historique, Ollama, voix (sidecar vs Python)
 - Images à la position du curseur (`_media/` par note)
@@ -156,13 +157,11 @@ Sortie : `src-tauri/target/release/cyberscribe-note.exe`
 3. ~~Sécurité Tauri, rename, RAG par vault, stores, wizard Ollama~~ (v0.5)
 4. ~~Refactor audit + indexer dossier + CI release Windows~~ (v0.5.5)
 5. ~~Fix démarrage Ollama Windows (chemin modèles / pas de 2e serve)~~ (v0.5.6)
-<<<<<<< HEAD
-6. Import documents MarkItDown (PDF / Office → MD)
-=======
 6. ~~Auto-start Ollama + prompts custom extraction (favoris)~~ (v0.5.7)
->>>>>>> origin/main
-7. Templates / graph · E2E Tauri
-8. Bundling NSIS + updater (+ Authenticode) · builds Linux
+7. ~~Import documents MarkItDown (PDF / Office → MD)~~ (v0.5.8)
+8. Cerveau Scribe : skills combinables (routeur + plans du buddy)
+9. Templates / graph · E2E Tauri
+10. Bundling NSIS + updater (+ Authenticode) · builds Linux
 
 Détail plan : [Docs/CyberScribe_Notes_Plan.md](Docs/CyberScribe_Notes_Plan.md).
 

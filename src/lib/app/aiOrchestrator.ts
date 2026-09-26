@@ -13,19 +13,27 @@ import {
   isDuplicateSummary,
   translateLangLabel,
 } from "$lib/ai/languages";
-import { formatExtractedLinksList, isLinkOnlyNote } from "$lib/ai/links";
+import { formatExtractedLinksList, isLinkOnlyNote, proposedUrlsStayInSource } from "$lib/ai/links";
 import { sanitizeAiOutput } from "$lib/ai/sanitize";
 import {
+  CLARIFY_SELECTION_MAX,
   extractUrls,
   formatEnrichContext,
   getSkill,
+  hasMarkdownSection,
   isEmptyLlmAppendix,
   parseTagsProposal,
-  runSkillLocal,
+  parseTitleProposal,
+  proposedWikilinksStayInVault,
+  titleIsSolid,
+  titleStaysOnTopic,
+  withProposedTitle,
+  wrapNamedSection,
   type SkillId,
 } from "$lib/ai/skills";
 import { hasMeaningfulDiff } from "$lib/ai/textDiff";
 import { repairMarkdownProposal } from "$lib/markdown/repair";
+import { buildOutlineSection } from "$lib/markdown/structure";
 import { mergeBodyMarkdown } from "$lib/markdown/bridge";
 import { noteBody } from "$lib/note/frontmatter";
 import { locateSelectionInContent } from "$lib/note/caret";
@@ -35,7 +43,7 @@ import { noteSession } from "$lib/stores/noteSession.svelte";
 import { notify } from "$lib/stores/notifications";
 import type { AiAction, VaultEntry } from "$lib/types";
 import { replaceTextRange, type AiActionRequest, type TextSelection } from "$lib/voice/commands";
-import { formatRelatedAppendix } from "$lib/app/relatedAppendix";
+import { formatRelatedAppendix, relatedProposalStaysOnContext } from "$lib/app/relatedAppendix";
 import { runFolderIndexSkill } from "$lib/app/folderIndexSkill";
 
 export type AiOrchestratorDeps = {
@@ -299,80 +307,33 @@ export async function runSkill(deps: AiOrchestratorDeps, id: SkillId): Promise<v
 
   aiQueue.companionOpen = true;
   const titles = flattenNotes(deps.entries).map((e) => noteStem(e.path));
+  const currentTitle = noteStem(pathAtStart);
+  const otherTitles = titles.filter((t) => t.trim() && t.toLowerCase() !== currentTitle.toLowerCase());
 
-  if (id === "related") {
-    aiQueue.aiLoading = true;
-    deps.setStatus("Notes liées — recherche…");
-    try {
-      const rag = await fetchRagContext(
-        targetText.slice(0, 800) || titles.join(" "),
-        pathAtStart,
-      );
-      if (!stillCurrentAiRequest(epoch, pathAtStart)) return;
-      const local = runSkillLocal("related", targetText, { ragBlock: formatRelatedAppendix(rag) });
-      if (!local) {
-        deps.setStatus(skill.emptyMessage);
-        return;
-      }
-      pushSuggestion({
-        action: "custom",
-        skillId: id,
-        label: skill.label,
-        scope: "à ajouter en fin de note",
-        proposedText: local.proposed,
-        originalText: "",
-        source: "manual",
-        notePath: pathAtStart,
-        applyMode: "append",
-        reason: local.reason,
-      });
-      deps.setStatus(`${skill.label} prêt — appliquez ou ignorez.`);
-    } catch (e) {
-      deps.setStatus(`Notes liées indisponibles : ${e}`);
-    } finally {
-      aiQueue.aiLoading = false;
-    }
+  if (id === "title" && titleIsSolid(deps.content)) {
+    deps.setStatus(skill.emptyMessage);
     return;
   }
 
-  const preferLocal = !skill.needsLlm || (skill.id === "structure" && !deps.ollamaAvailable);
-  const local = preferLocal
-    ? runSkillLocal(id, targetText, {
-        titles,
-        currentTitle: noteStem(pathAtStart),
-        noteContext: deps.noteContext.trim(),
-      })
-    : skill.id === "structure"
-      ? null
-      : runSkillLocal(id, targetText, {
-          titles,
-          currentTitle: noteStem(pathAtStart),
-          noteContext: deps.noteContext.trim(),
-        });
-  if (local) {
-    const mode = local.applyMode ?? skill.applyMode;
-    pushSuggestion({
-      action: "custom",
-      skillId: id,
-      label: skill.label,
-      scope:
-        mode === "append" ? "à ajouter en fin de note" : deps.editorSelection?.text ? "sélection" : "note",
-      proposedText: local.proposed,
-      originalText: mode === "append" || mode === "tags" ? "" : targetText,
-      source: "manual",
-      notePath: pathAtStart,
-      applyMode: mode === "tags" ? "tags" : mode,
-      reason: local.reason,
-      selection:
-        mode === "replace" && deps.editorSelection
-          ? {
-              start: deps.editorSelection.start,
-              end: deps.editorSelection.end,
-              text: deps.editorSelection.text,
-            }
-          : undefined,
-    });
-    deps.setStatus(`${skill.label} prêt — appliquez ou ignorez.`);
+  if (id === "decisions" && hasMarkdownSection(targetText, "Décisions")) {
+    deps.setStatus(skill.emptyMessage);
+    return;
+  }
+
+  if (id === "sources") {
+    if (hasMarkdownSection(targetText, "Sources") || extractUrls(targetText).length === 0) {
+      deps.setStatus(skill.emptyMessage);
+      return;
+    }
+  }
+
+  if (id === "outline" && !buildOutlineSection(targetText)) {
+    deps.setStatus(skill.emptyMessage);
+    return;
+  }
+
+  if (id === "wikilinks" && otherTitles.length === 0) {
+    deps.setStatus(skill.emptyMessage);
     return;
   }
 
@@ -409,10 +370,26 @@ export async function runSkill(deps: AiOrchestratorDeps, id: SkillId): Promise<v
       }>("fetch_page_meta", { url: urls[0] });
       if (!stillCurrentAiRequest(epoch, pathAtStart)) return;
       promptContent = formatEnrichContext(meta);
+    } else if (skill.id === "sources") {
+      const urls = extractUrls(targetText);
+      promptContent =
+        `URL déjà présentes (n'en ajoute aucune) :\n${urls.map((u) => `- ${u}`).join("\n")}\n\nNote :\n${targetText}`;
+    } else if (skill.id === "wikilinks") {
+      promptContent =
+        `Titres du vault (seuls liens autorisés) :\n${otherTitles.map((t) => `- ${t}`).join("\n")}\n\nNote :\n${targetText}`;
     }
 
-    const ragContext =
-      skill.wantsRag ? (await fetchRagContext(targetText.slice(0, 800), pathAtStart)) || null : null;
+    let ragContext: string | null = null;
+    if (skill.wantsRag) {
+      const rag = await fetchRagContext(targetText.slice(0, 800) || otherTitles.join(" "), pathAtStart);
+      if (!stillCurrentAiRequest(epoch, pathAtStart)) return;
+      const packed = formatRelatedAppendix(rag).trim();
+      if (skill.id === "related" && !packed) {
+        deps.setStatus(skill.emptyMessage);
+        return;
+      }
+      ragContext = packed || null;
+    }
 
     const result = await invoke<string>("ollama_custom_prompt", {
       instruction: skill.llmInstruction,
@@ -424,6 +401,144 @@ export async function runSkill(deps: AiOrchestratorDeps, id: SkillId): Promise<v
     if (!stillCurrentAiRequest(epoch, pathAtStart)) return;
 
     let cleaned = sanitizeAiOutput(result, "custom");
+    if (skill.id === "title") {
+      const title = parseTitleProposal(cleaned);
+      const noteForTitle = noteBody(deps.content) || targetText;
+      if (!title || !titleStaysOnTopic(noteForTitle, title)) {
+        deps.setStatus(skill.emptyMessage);
+        return;
+      }
+      const proposed = withProposedTitle(deps.content, title);
+      if (!hasMeaningfulDiff(deps.content, proposed)) {
+        deps.setStatus(skill.emptyMessage);
+        return;
+      }
+      pushSuggestion({
+        action: "custom",
+        skillId: id,
+        label: skill.label,
+        scope: "titre",
+        proposedText: proposed,
+        originalText: deps.content,
+        source: "manual",
+        notePath: pathAtStart,
+        applyMode: "replace",
+        reason: `Titre proposé : ${title}`,
+      });
+      deps.setStatus(`${skill.label} prêt — appliquez ou ignorez.`);
+      return;
+    }
+
+    if (skill.id === "clarify") {
+      const sel = deps.editorSelection;
+      const selText = sel?.text.trim() ?? "";
+      const shortSel = selText.length >= 8 && selText.length <= CLARIFY_SELECTION_MAX;
+      if (shortSel && sel) {
+        const proposed = cleaned.trim();
+        if (!proposed || isEmptyLlmAppendix(proposed) || !isGroundedTransform(selText, proposed)) {
+          deps.setStatus(skill.emptyMessage);
+          return;
+        }
+        pushSuggestion({
+          action: "custom",
+          skillId: id,
+          label: skill.label,
+          scope: "sélection",
+          proposedText: proposed,
+          originalText: selText,
+          source: "manual",
+          notePath: pathAtStart,
+          applyMode: "replace",
+          reason: skill.hint,
+          selection: { start: sel.start, end: sel.end, text: sel.text },
+        });
+        deps.setStatus(`${skill.label} prêt — la sélection sera remplacée.`);
+        return;
+      }
+      cleaned = wrapNamedSection("Version claire", cleaned);
+    }
+
+    if (skill.id === "shorten") {
+      cleaned = wrapNamedSection("Version courte", cleaned);
+    }
+
+    if (skill.id === "template") {
+      const body = cleaned.trim();
+      if (!body || !/^#{1,3}\s+\S/m.test(body)) {
+        deps.setStatus(skill.emptyMessage);
+        return;
+      }
+      const appending = Boolean(targetText.trim());
+      const proposed = appending && !/^##\s+/.test(body) ? `## Template\n\n${body}` : body;
+      pushSuggestion({
+        action: "custom",
+        skillId: id,
+        label: skill.label,
+        scope: appending ? "à ajouter en fin de note" : "note",
+        proposedText: proposed,
+        originalText: appending ? "" : targetText,
+        source: "manual",
+        notePath: pathAtStart,
+        applyMode: appending ? "append" : "replace",
+        reason: skill.hint,
+      });
+      deps.setStatus(`${skill.label} prêt — appliquez ou ignorez.`);
+      return;
+    }
+
+    if (skill.id === "related") {
+      if (
+        isEmptyLlmAppendix(cleaned) ||
+        !ragContext ||
+        !relatedProposalStaysOnContext(cleaned, ragContext)
+      ) {
+        deps.setStatus(skill.emptyMessage);
+        return;
+      }
+      pushSuggestion({
+        action: "custom",
+        skillId: id,
+        label: skill.label,
+        scope: "à ajouter en fin de note",
+        proposedText: cleaned.trim(),
+        originalText: "",
+        source: "manual",
+        notePath: pathAtStart,
+        applyMode: "append",
+        reason: skill.hint,
+      });
+      deps.setStatus(`${skill.label} prêt — appliquez ou ignorez.`);
+      return;
+    }
+
+    if (skill.id === "sources") {
+      const body = cleaned.trim();
+      const invented = Boolean(body) && !proposedUrlsStayInSource(targetText, body);
+      if (!body || invented || extractUrls(body).length === 0) {
+        deps.setStatus(
+          invented
+            ? "L'IA a ajouté une URL absente de la note — section Sources rejetée."
+            : skill.emptyMessage,
+        );
+        return;
+      }
+      const proposed = /^##\s+/m.test(body) ? body : `## Sources\n\n${body}`;
+      pushSuggestion({
+        action: "custom",
+        skillId: id,
+        label: skill.label,
+        scope: "à ajouter en fin de note",
+        proposedText: proposed,
+        originalText: "",
+        source: "manual",
+        notePath: pathAtStart,
+        applyMode: "append",
+        reason: skill.hint,
+      });
+      deps.setStatus(`${skill.label} prêt — appliquez ou ignorez.`);
+      return;
+    }
+
     if (skill.applyMode === "tags") {
       const tags = parseTagsProposal(cleaned);
       if (!tags.length) {
@@ -474,10 +589,12 @@ export async function runSkill(deps: AiOrchestratorDeps, id: SkillId): Promise<v
 
     if (skill.applyMode === "replace") {
       cleaned = repairMarkdownProposal(cleaned);
+      if (skill.id === "wikilinks" && !proposedWikilinksStayInVault(targetText, cleaned, otherTitles)) {
+        deps.setStatus("L'IA a inventé un wikilien — proposition rejetée.");
+        return;
+      }
       if (!cleaned.trim() || !isGroundedTransform(targetText, cleaned)) {
-        deps.setStatus(
-          "L'IA a dérivé du contenu — proposition rejetée. Réessayez ou utilisez une skill locale.",
-        );
+        deps.setStatus("L'IA a dérivé du contenu — proposition rejetée. Réessayez.");
         return;
       }
     } else {
@@ -531,32 +648,32 @@ export async function runCustomPrompt(deps: AiOrchestratorDeps, instruction: str
       ? `Custom : ${trimmedInstruction.slice(0, 39)}…`
       : `Custom : ${trimmedInstruction}`;
 
-  // Favoris HTML / dumps de liens : extraction locale fiable (sans LLM / timeout / filtre).
-  if (/\b(lien|liens|urls?|http)\b/i.test(trimmedInstruction) && instructionIsDerivedOutput(trimmedInstruction)) {
-    const localList = formatExtractedLinksList(targetText);
-    if (localList) {
-      aiQueue.companionOpen = true;
-      pushSuggestion({
-        action: "custom",
-        label,
-        scope,
-        proposedText: localList,
-        originalText: targetText,
-        source: "manual",
-        notePath: pathAtStart,
-        reason: `${trimmedInstruction} (extraction locale)`,
-        selection: sel ? { start: sel.start, end: sel.end, text: sel.text } : undefined,
-      });
-      deps.setStatus(
-        `Liste de liens prête (${localList.split("\n").length} entrées) — appliquez ou ignorez.`,
-      );
-      return;
-    }
-  }
+  const wantsLocalLinks =
+    /\b(lien|liens|urls?|http)\b/i.test(trimmedInstruction) &&
+    instructionIsDerivedOutput(trimmedInstruction);
 
   if (!deps.ollamaAvailable) {
     const started = await deps.ensureOllamaRunning(true);
     if (!started) {
+      const localList = wantsLocalLinks ? formatExtractedLinksList(targetText) : null;
+      if (localList) {
+        aiQueue.companionOpen = true;
+        pushSuggestion({
+          action: "custom",
+          label,
+          scope,
+          proposedText: localList,
+          originalText: targetText,
+          source: "manual",
+          notePath: pathAtStart,
+          reason: `${trimmedInstruction} — Ollama est arrêté, URL déjà écrites uniquement.`,
+          selection: sel ? { start: sel.start, end: sel.end, text: sel.text } : undefined,
+        });
+        deps.setStatus(
+          `Ollama est arrêté — liste des liens déjà présents (${localList.split("\n").length}), sans rédaction IA.`,
+        );
+        return;
+      }
       deps.openSettings();
       deps.setStatus("Configurez ou démarrez Ollama dans les réglages.");
       return;
