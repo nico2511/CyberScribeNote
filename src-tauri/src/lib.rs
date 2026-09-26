@@ -19,7 +19,8 @@ use commands::{
     save_app_config, search_vault, setup_voice, voice_check_deps,
     voice_get_status, voice_install_deps, voice_list_whisper_cache, voice_models_dir,
     voice_preload_whisper_model, voice_restart, voice_toggle, write_note, VoiceState,
-    fetch_page_meta, markitdown_install_deps, markitdown_status,
+    fetch_page_meta, markitdown_install_deps, markitdown_status, check_app_update,
+    snooze_app_update,
 };
 
 use std::sync::{Arc, Mutex};
@@ -114,6 +115,8 @@ pub fn run() {
             voice_list_whisper_cache,
             voice_preload_whisper_model,
             fetch_page_meta,
+            check_app_update,
+            snooze_app_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

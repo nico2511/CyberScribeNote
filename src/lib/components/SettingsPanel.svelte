@@ -11,6 +11,7 @@
     OllamaStatus,
     PullProgress,
     RecommendedModel,
+    UpdateInfo,
     VoiceDepsStatus,
     VoiceStatus,
     WhisperCacheEntry,
@@ -45,7 +46,14 @@
     txtSyncEnabled: true,
     noteHistoryEnabled: true,
     noteHistoryMax: 25,
+    checkUpdatesOnStartup: true,
+    updateSnoozeUntil: null,
+    updateSnoozeVersion: null,
+    lastUpdateCheck: null,
   });
+  let updateInfo = $state<UpdateInfo | null>(null);
+  let updateChecking = $state(false);
+  let updateError = $state("");
   let defaultVault = $state("");
   let currentVault = $state("");
   let voiceDeps = $state<VoiceDepsStatus | null>(null);
@@ -76,6 +84,7 @@
   async function loadConfigFast() {
     try {
       config = await invoke<AppConfig>("get_app_config");
+      updateInfo = config.lastUpdateCheck ?? null;
       defaultVault = await invoke<string>("default_vault_path");
       currentVault = vaultPath || (await invoke<string>("init_vault"));
     } catch {
@@ -298,6 +307,37 @@
 
   async function preloadWhisper() {
     await applyVoiceConfig();
+  }
+
+  function formatCheckedAt(iso: string): string {
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return iso;
+    return date.toLocaleString("fr-FR", { dateStyle: "medium", timeStyle: "short" });
+  }
+
+  async function checkForUpdateNow() {
+    updateChecking = true;
+    updateError = "";
+    try {
+      const info = await invoke<UpdateInfo>("check_app_update");
+      updateInfo = info;
+      config.lastUpdateCheck = info;
+    } catch (e) {
+      const msg = String(e).replace(/^Error:\s*/i, "");
+      updateError =
+        msg && msg.length < 200 ? msg : "Vérification impossible pour le moment.";
+    } finally {
+      updateChecking = false;
+    }
+  }
+
+  async function openUpdateLink(url: string) {
+    updateError = "";
+    try {
+      await openUrl(url);
+    } catch {
+      updateError = "Impossible d'ouvrir le lien.";
+    }
   }
 
   async function saveConfig() {
@@ -935,6 +975,88 @@
           </button>
           <p class="text-[10px] text-text-muted">
             Obligatoire après changement de modèle ou de raccourci. Attend la fin du chargement Whisper.
+          </p>
+        </section>
+
+        <section class="space-y-3 border-t border-border pt-4">
+          <h3 class="text-sm font-semibold">Mise à jour</h3>
+          <p class="text-[11px] text-text-muted leading-relaxed">
+            Version installée <span class="font-medium text-text">v{APP_VERSION}</span>.
+            CyberScribeNote détecte une release GitHub plus récente et propose le zip
+            portable. Rien n'est installé tout seul.
+          </p>
+          <label class="flex cursor-pointer items-start gap-2 text-[11px] text-text">
+            <input
+              type="checkbox"
+              class="mt-0.5"
+              checked={config.checkUpdatesOnStartup !== false}
+              onchange={(e) => {
+                config.checkUpdatesOnStartup = (e.currentTarget as HTMLInputElement).checked;
+                void saveConfig();
+              }}
+            />
+            <span>
+              <span class="font-medium">Vérifier les mises à jour au démarrage</span>
+              <span class="block text-text-muted">
+                Après l'écran d'accueil. Hors ligne, la vérification échoue en silence.
+              </span>
+            </span>
+          </label>
+          <button
+            type="button"
+            class="w-full rounded-2xl bg-accent-blue/30 py-2 text-xs font-medium hover:bg-accent-blue/50 disabled:opacity-50"
+            disabled={updateChecking}
+            onclick={checkForUpdateNow}
+          >
+            {updateChecking ? "Vérification…" : "Vérifier maintenant"}
+          </button>
+          {#if updateInfo && updateInfo.checkedAt}
+            <div class="rounded-2xl border border-border bg-surface-muted p-3 text-[11px]">
+              <p class="text-text-muted">
+                Dernière vérification : {formatCheckedAt(updateInfo.checkedAt)}
+              </p>
+              {#if updateInfo.updateAvailable}
+                <p class="mt-1 font-medium text-text">Nouvelle version {updateInfo.latest}</p>
+                {#if updateInfo.body}
+                  <p class="mt-1 text-text-muted leading-relaxed">{updateInfo.body}</p>
+                {/if}
+              {:else if updateInfo.latest && updateInfo.latest !== (updateInfo.current || APP_VERSION)}
+                <p class="mt-1 text-text">
+                  Pas de mise à jour stable (publication consultée : {updateInfo.latest}).
+                </p>
+              {:else}
+                <p class="mt-1 text-text">Vous êtes à jour.</p>
+              {/if}
+            </div>
+          {:else}
+            <p class="text-[11px] text-text-muted">Dernière vérification : jamais.</p>
+          {/if}
+          {#if updateError}
+            <p class="text-[11px] text-text-muted">{updateError}</p>
+          {/if}
+          <div class="flex flex-wrap gap-2">
+            <button
+              type="button"
+              class="rounded-2xl border border-border px-3 py-2 text-xs hover:bg-surface-muted"
+              onclick={() => openUpdateLink(updateInfo?.releaseUrl || `${APP_REPO_URL}/releases`)}
+            >
+              Ouvrir la release
+            </button>
+            {#if updateInfo?.downloadUrl}
+              <button
+                type="button"
+                class="rounded-2xl bg-accent-lavender/40 px-3 py-2 text-xs font-medium hover:bg-accent-lavender/60"
+                onclick={() => openUpdateLink(updateInfo?.downloadUrl || "")}
+              >
+                Télécharger le zip
+              </button>
+            {/if}
+          </div>
+          <p class="text-[10px] text-text-muted leading-relaxed">
+            Le fichier <span class="font-medium">CyberScribeNote-win.zip</span> n'est pas signé
+            (SmartScreen possible). Dézippez-le et remplacez l'application à la main.
+            « Plus tard » sur l'avis masque cette version pendant 7 jours
+            (<span class="font-mono">config.json</span>). Les préversions sont ignorées.
           </p>
         </section>
 

@@ -44,6 +44,24 @@
           {#if toast.message}
             <p class="mt-0.5 text-xs text-text-muted leading-relaxed">{toast.message}</p>
           {/if}
+          {#if toast.actions?.length}
+            <div class="mt-2 flex flex-wrap gap-2">
+              {#each toast.actions as action, i (action.label)}
+                <button
+                  type="button"
+                  class={i === 0
+                    ? "rounded-xl bg-accent-blue/35 px-2.5 py-1 text-[11px] font-medium hover:bg-accent-blue/55"
+                    : "rounded-xl border border-border bg-surface/70 px-2.5 py-1 text-[11px] font-medium hover:bg-surface-muted"}
+                  onclick={() => {
+                    action.onClick();
+                    dismissToast(toast.id);
+                  }}
+                >
+                  {action.label}
+                </button>
+              {/each}
+            </div>
+          {/if}
         </div>
         <button
           type="button"

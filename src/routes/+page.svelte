@@ -4,6 +4,7 @@
   import { registerVoiceListeners, type VoiceCrashState } from "$lib/app/voiceListeners";
   import { resolveFirstRunUi } from "$lib/app/appBootstrap";
   import { runAppStartup } from "$lib/app/appStartup";
+  import { runStartupUpdateCheck } from "$lib/app/updateCheck";
   import {
     createNoteWithPrompt,
     createFolderWithPrompt,
@@ -117,6 +118,7 @@
   let settingsOpen = $state(false);
   let splashOpen = $state(false);
   let setupOpen = $state(false);
+  let startupReady = $state(false);
   let historyOpen = $state(false);
   $effect(() => {
     noteSession.selectedPath;
@@ -661,6 +663,12 @@
     const firstRun = resolveFirstRunUi();
     setupOpen = firstRun.setupOpen;
     splashOpen = firstRun.splashOpen;
+    startupReady = true;
+  });
+
+  $effect(() => {
+    if (!startupReady || setupOpen || splashOpen) return;
+    void runStartupUpdateCheck();
   });
 
   onDestroy(() => {

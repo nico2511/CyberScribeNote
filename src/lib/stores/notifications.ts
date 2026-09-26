@@ -1,5 +1,10 @@
 export type ToastKind = "info" | "success" | "warning" | "error";
 
+export interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
+
 export interface ToastInput {
   kind: ToastKind;
   title: string;
@@ -8,6 +13,7 @@ export interface ToastInput {
   durationMs?: number;
   /** Si fourni, remplace un toast déjà affiché avec la même clé. */
   key?: string;
+  actions?: ToastAction[];
 }
 
 export interface Toast extends ToastInput {

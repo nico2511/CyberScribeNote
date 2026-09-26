@@ -35,6 +35,19 @@ export interface OllamaDetect {
   networkGuidance?: string;
 }
 
+/** Résultat de `check_app_update` (GitHub Releases, lecture seule). */
+export interface UpdateInfo {
+  current: string;
+  latest: string;
+  updateAvailable: boolean;
+  releaseUrl: string;
+  downloadUrl?: string | null;
+  name: string;
+  /** Extrait court du corps de release. */
+  body?: string | null;
+  checkedAt: string;
+}
+
 export interface AppConfig {
   ollamaHost: string;
   selectedModel: string;
@@ -53,6 +66,13 @@ export interface AppConfig {
   noteHistoryEnabled?: boolean;
   /** Max versions par note. */
   noteHistoryMax?: number;
+  /** Vérifier GitHub Releases au démarrage. Défaut : activé. */
+  checkUpdatesOnStartup?: boolean;
+  /** RFC3339 : fin du report « Plus tard » (7 jours). */
+  updateSnoozeUntil?: string | null;
+  /** Version (sans `v`) masquée par le report. */
+  updateSnoozeVersion?: string | null;
+  lastUpdateCheck?: UpdateInfo | null;
 }
 
 export interface RecommendedModel {

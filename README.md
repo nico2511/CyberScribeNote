@@ -27,7 +27,8 @@ Basé sur le plan [CyberScribe Notes](Docs/CyberScribe_Notes_Plan.md) et inspir�
 - **Scribe** : tips, plans multi-skills (cerveau) et analyse de sélection ; dictée dans le prompt custom
 - **Cerveau** : routeur de skills combinables hors menu IA ▾ — [Docs/Scribe_Cerveau_Skills.md](Docs/Scribe_Cerveau_Skills.md)
 - Correction typo locale + Ollama / RAG optionnel
-- Panneau **Réglages** (Ctrl+,) : vault, sync TXT, historique, Ollama, voix (sidecar vs Python)
+- Panneau **Réglages** (Ctrl+,) : vault, sync TXT, historique, Ollama, voix (sidecar vs Python), mises à jour
+- **Vérification de release** : au démarrage (option), toast « Nouvelle version » + lien GitHub. Téléchargement manuel du zip, pas d'installation automatique
 - Images à la position du curseur (`_media/` par note)
 - **Dictée PTT** : sidecar `voice_worker.exe` (priorité, VAD Silero inclus) ou Python
 - Single-instance · Export `.md` · Import multi `.txt` · Import documents (PDF/Office/HTML → MD via [MarkItDown](https://github.com/microsoft/markitdown))
@@ -47,6 +48,18 @@ Sur la [page Releases](https://github.com/nico2511/CyberScribeNote/releases) :
 - **Import PDF/Office** : Python 3.10+ + **Réglages → Import documents → Installer MarkItDown** (le dossier `tools/` doit rester à côté de l’exe).
 - Linux / macOS : pas de binaire prêt pour l’instant (build source + Python pour la voix).
 - Le worker est local (stdin/stdout, pas de serveur ouvert). Binaire non signé → SmartScreen possible.
+
+### Mises à jour
+
+Il n'y a pas d'installeur ni d'updater signé (`bundle.active` est `false`, pas de `tauri-plugin-updater`). L'application **détecte** seulement une release GitHub plus récente :
+
+1. Après le splash / l'assistant (si **Réglages → Mise à jour → Vérifier les mises à jour au démarrage**, activé par défaut), un appel en arrière-plan lit l'API publique `releases/latest` (timeout court). Hors ligne ou si GitHub ne répond pas, l'échec est silencieux et le démarrage n'est pas bloqué.
+2. Si le tag (semver, préfixe `v` retiré) est plus récent que la version embarquée, un bandeau propose **Ouvrir la release** et **Plus tard**.
+3. **Plus tard** enregistre dans `Documents/CyberScribeNote/config.json` un report de **7 jours** pour cette version seulement (`updateSnoozeUntil`, `updateSnoozeVersion`). Le contrôle réseau a quand même lieu ; seul l'avis est masqué. Une version différente réaffiche l'avis. Fermer le bandeau (✕) le cache jusqu'au prochain lancement, sans report. Ouvrir la release ne reporte pas l'avis.
+4. **Réglages → Mise à jour** affiche la version actuelle, la dernière vérification, **Vérifier maintenant**, le lien de release et le zip `CyberScribeNote-win.zip` s'il est publié.
+5. Les brouillons et préversions (`-rc`, `-beta`, case prerelease) sont ignorés.
+
+Le zip reste à remplacer à la main. Il n'est pas signé : Windows SmartScreen peut s'afficher.
 
 ## Soutenir / dons
 
@@ -159,9 +172,10 @@ Sortie : `src-tauri/target/release/cyberscribe-note.exe`
 5. ~~Fix démarrage Ollama Windows (chemin modèles / pas de 2e serve)~~ (v0.5.6)
 6. ~~Auto-start Ollama + prompts custom extraction (favoris)~~ (v0.5.7)
 7. ~~Import documents MarkItDown (PDF / Office → MD)~~ (v0.5.8)
-8. Cerveau Scribe : skills combinables (routeur + plans du buddy)
-9. Templates / graph · E2E Tauri
-10. Bundling NSIS + updater (+ Authenticode) · builds Linux
+8. ~~Cerveau Scribe : skills combinables (routeur + plans du buddy)~~ (v0.5.9)
+9. Vérification de nouvelle release (zip manuel, sans updater signé) — même livraison v0.5.9
+10. Templates / graph · E2E Tauri
+11. Bundling NSIS + updater (+ Authenticode) · builds Linux
 
 Détail plan : [Docs/CyberScribe_Notes_Plan.md](Docs/CyberScribe_Notes_Plan.md).
 
