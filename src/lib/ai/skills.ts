@@ -49,8 +49,13 @@ export interface NoteSkill {
   promptMatch: RegExp;
   llmInstruction?: string;
   emptyMessage: string;
-  /** Groupe UI optionnel (menu IA ▾). */
+  /** Groupe du menu court (Forme / Rédaction / Liens). */
   group?: "shape" | "write" | "connect";
+  /**
+   * Bouton dans le menu court (compagnon). Le catalogue entier reste
+   * joignable par le routeur, la voix, Enchaîner et les tips.
+   */
+  inMenu: boolean;
   /** Thème du routeur. Indépendant du groupe d'affichage. */
   theme: SkillTheme;
 }
@@ -63,6 +68,7 @@ export const NOTE_SKILLS: NoteSkill[] = [
     needsLlm: true,
     applyMode: "replace",
     group: "shape",
+    inMenu: true,
     theme: "amelioration",
     voice: /^(structur\w*|format(?:e|er|age)?)\b/,
     promptMatch: /\b(structurer|formatage)\b/i,
@@ -82,6 +88,7 @@ export const NOTE_SKILLS: NoteSkill[] = [
     needsLlm: true,
     applyMode: "replace",
     group: "shape",
+    inMenu: true,
     theme: "construction",
     voice: /^(sommaire|outline|table des matieres|table des mati\w*)\b/,
     promptMatch: /\b(sommaire|outline|table des mati[eè]res)\b/i,
@@ -100,6 +107,7 @@ export const NOTE_SKILLS: NoteSkill[] = [
     applyMode: "replace",
     allowEmpty: true,
     group: "connect",
+    inMenu: false,
     theme: "documents",
     voice: /^(indexer?|indexe)(\s+(ce\s+)?dossier)?\b/,
     promptMatch: /\b(indexer|indexe)\s+(ce\s+)?dossier\b/i,
@@ -118,6 +126,7 @@ export const NOTE_SKILLS: NoteSkill[] = [
     applyMode: "append",
     needsUrlFetch: true,
     group: "write",
+    inMenu: true,
     theme: "documents",
     voice: /^(enrich\w*|lien|url|page web)\b/,
     promptMatch: /\b(enrichir|analyser le lien|depuis l['']url)\b/i,
@@ -135,6 +144,7 @@ export const NOTE_SKILLS: NoteSkill[] = [
     needsLlm: true,
     applyMode: "append",
     group: "write",
+    inMenu: true,
     theme: "analyse",
     voice: /^(points?\s*cles?|keypoints?|essentiel|taches?|todos?|checklist)\b/,
     promptMatch: /\b(points? cl[eé]s?|extraire les actions|checklist)\b/i,
@@ -152,6 +162,7 @@ export const NOTE_SKILLS: NoteSkill[] = [
     needsLlm: true,
     applyMode: "tags",
     group: "connect",
+    inMenu: true,
     theme: "connexion",
     voice: /^(tags?|etiquettes?|label)\b/,
     promptMatch: /\b(tags?|etiquettes?)\b/i,
@@ -170,6 +181,7 @@ export const NOTE_SKILLS: NoteSkill[] = [
     applyMode: "replace",
     allowEmpty: true,
     group: "shape",
+    inMenu: true,
     theme: "prise-de-notes",
     voice: /^(template|modele|daily|journal)\b/,
     promptMatch: /\b(template|mod[eè]le de note|daily note)\b/i,
@@ -187,6 +199,7 @@ export const NOTE_SKILLS: NoteSkill[] = [
     needsLlm: true,
     applyMode: "append",
     group: "write",
+    inMenu: true,
     theme: "ecriture",
     voice: /^(brief|resume court|tl;?dr)\b/,
     promptMatch: /\b(brief|r[eé]sum[eé] court|tl;?dr)\b/i,
@@ -203,6 +216,7 @@ export const NOTE_SKILLS: NoteSkill[] = [
     needsLlm: true,
     applyMode: "append",
     group: "write",
+    inMenu: false,
     theme: "construction",
     voice: /^(plan|concevoir|conception|organise|organiser)\b/,
     promptMatch: /\b(plan de note|concevoir|conception)\b/i,
@@ -221,6 +235,7 @@ export const NOTE_SKILLS: NoteSkill[] = [
     applyMode: "append",
     wantsRag: true,
     group: "connect",
+    inMenu: true,
     theme: "connexion",
     voice: /^(liees?|related|notes? proches|similaires)\b/,
     promptMatch: /\b(notes? li[eé]es|notes? proches|similaires)\b/i,
@@ -240,6 +255,7 @@ export const NOTE_SKILLS: NoteSkill[] = [
     needsLlm: true,
     applyMode: "replace",
     group: "connect",
+    inMenu: true,
     theme: "connexion",
     voice: /^(wikiliens?|wikilinks?)\b/,
     promptMatch: /\b(wikilinks?|wikiliens?|liens internes)\b/i,
@@ -256,6 +272,7 @@ export const NOTE_SKILLS: NoteSkill[] = [
     needsLlm: true,
     applyMode: "append",
     group: "write",
+    inMenu: false,
     theme: "analyse",
     voice: /^(actions?)\b/,
     promptMatch: /\b(actions?|quelles sont les actions)\b/i,
@@ -273,6 +290,7 @@ export const NOTE_SKILLS: NoteSkill[] = [
     needsLlm: true,
     applyMode: "append",
     group: "write",
+    inMenu: false,
     theme: "analyse",
     voice: /^(questions?|a creuser|ouvertures?)\b/,
     promptMatch: /\b(questions?|à creuser|ouvertures?)\b/i,
@@ -290,6 +308,7 @@ export const NOTE_SKILLS: NoteSkill[] = [
     needsLlm: true,
     applyMode: "append",
     group: "write",
+    inMenu: false,
     theme: "analyse",
     voice: /^(decisions?|arbitrages?)\b/,
     promptMatch: /\b(d[eé]cisions?|arbitrages?|on a d[eé]cid[eé])\b/i,
@@ -307,6 +326,7 @@ export const NOTE_SKILLS: NoteSkill[] = [
     needsLlm: true,
     applyMode: "append",
     group: "write",
+    inMenu: false,
     theme: "ecriture",
     voice: /^(clarifie\w*|eclaircis\w*)\b/,
     promptMatch: /\b(clarifi\w*|éclaircis\w*|reformule plus clair)\b/i,
@@ -324,6 +344,7 @@ export const NOTE_SKILLS: NoteSkill[] = [
     needsLlm: true,
     applyMode: "append",
     group: "write",
+    inMenu: false,
     theme: "ecriture",
     voice: /^(raccourcis\w*|condense\w*)\b/,
     promptMatch: /\b(raccourc\w*|condens\w*|plus court)\b/i,
@@ -340,6 +361,7 @@ export const NOTE_SKILLS: NoteSkill[] = [
     needsLlm: true,
     applyMode: "replace",
     group: "shape",
+    inMenu: false,
     theme: "construction",
     voice: /^(titre|intitule|renomme cette note|renomme la note)\b/,
     promptMatch: /\b(titre|intitul[eé]|renomme cette note)\b/i,
@@ -356,6 +378,7 @@ export const NOTE_SKILLS: NoteSkill[] = [
     needsLlm: true,
     applyMode: "replace",
     group: "shape",
+    inMenu: false,
     theme: "amelioration",
     voice: /^(relis\w*|orthographe|typos?|corrige\w*)\b/,
     promptMatch: /\b(relis\w*|orthographe|typos?|relecture)\b/i,
@@ -372,6 +395,7 @@ export const NOTE_SKILLS: NoteSkill[] = [
     needsLlm: true,
     applyMode: "append",
     group: "connect",
+    inMenu: false,
     theme: "documents",
     voice: /^(sources?|references?|bibliographie)\b/,
     promptMatch: /\b(sources?|r[eé]f[eé]rences?|bibliographie)\b/i,
@@ -388,6 +412,11 @@ export function getSkill(id: SkillId): NoteSkill {
   const skill = NOTE_SKILLS.find((s) => s.id === id);
   if (!skill) throw new Error(`Skill inconnue : ${id}`);
   return skill;
+}
+
+/** Skills affichées comme boutons. Le reste du catalogue passe par le routeur. */
+export function skillsInMenu(): NoteSkill[] {
+  return NOTE_SKILLS.filter((s) => s.inMenu);
 }
 
 /**

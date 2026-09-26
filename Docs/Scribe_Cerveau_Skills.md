@@ -2,13 +2,21 @@
 
 Scribe (le pixel, `scribeBuddy.ts`) est le cerveau **visible**, hors du menu IA ▾ : tips, raccourcis, plans. Le **routeur** (`src/lib/ai/skillRouter.ts`) est le moteur : une consigne libre devient un plan de 1 à N skills, dans l’ordre, avec une confiance et un pourquoi.
 
-Le menu IA ▾ reste le geste unitaire (résumer, reformuler, corriger, traduire, un skill). Le cerveau sert à **enchaîner** un flux de note.
+Le menu IA ▾ reste le geste unitaire (résumer, reformuler, corriger, traduire). Il n’énumère pas le catalogue. Le cerveau sert à **enchaîner** un flux de note.
 
 Tout reste offline-first. Ollama est local. Aucune API cloud.
 
 ## Thèmes
 
-Chaque skill du catalogue TypeScript porte un `theme`. Le `group` (`shape` | `write` | `connect`) continue d’alimenter le menu.
+Chaque skill du catalogue TypeScript porte un `theme`. Le `group` (`shape` | `write` | `connect`) range les boutons du menu court.
+
+## Catalogue ≠ menu
+
+Le catalogue (`NOTE_SKILLS`, 19 skills) reste complet pour le routeur, la voix, Enchaîner et les tips Scribe.
+
+Le panneau « Skills rapides » n’affiche que les skills `inMenu` (neuf) : Structurer, Sommaire, Template, Lien, Points clés, Brief, Tags, Liées, [[Liens]]. Une ligne sous les boutons : les autres passent par le prompt ou Enchaîner.
+
+Hors boutons, toujours joignables par consigne, voix, plan ou tip : Plan, Indexer dossier, Actions, Questions, Décisions, Clarifier, Raccourcir, Titre, Relire, Sources.
 
 | Thème | Rôle | Skills |
 | --- | --- | --- |

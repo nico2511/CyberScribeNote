@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { AiSuggestion, VoiceStatus } from "$lib/types";
   import SuggestionDiff from "$lib/components/SuggestionDiff.svelte";
-  import { NOTE_SKILLS, type SkillId } from "$lib/ai/skills";
+  import { skillsInMenu, type SkillId } from "$lib/ai/skills";
   import { combineSkillPlan, routeSkillsFromIntent, type SkillRouteInput } from "$lib/ai/skillRouter";
   import {
     VOICE_CATEGORY_LABELS,
@@ -330,10 +330,7 @@
           Skills rapides
         </p>
         <p class="mt-0.5 text-[9px] text-text-muted">
-          Raccourcis optionnels. Le prompt ci-dessus n'est jamais détourné.
-          {#if !ollamaAvailable}
-            {" "}Toutes les skills passent par Ollama.
-          {/if}
+          Les autres skills passent par le prompt ou Enchaîner{ollamaAvailable ? "." : " (Ollama requis)."}
         </p>
         <div class="mt-1.5 space-y-2">
           {#each [
@@ -341,7 +338,7 @@
             { key: "write", label: "Rédaction" },
             { key: "connect", label: "Liens" },
           ] as group (group.key)}
-            {@const skills = NOTE_SKILLS.filter((s) => s.group === group.key)}
+            {@const skills = skillsInMenu().filter((s) => s.group === group.key)}
             {#if skills.length}
               <p class="text-[9px] font-medium uppercase tracking-wide text-text-muted">{group.label}</p>
               <div class="grid grid-cols-3 gap-1">

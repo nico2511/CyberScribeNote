@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { isGroundedAppendix } from "./grounding";
+import { routeSkillsFromIntent } from "./skillRouter";
 import {
   matchSkillFromText,
   NOTE_SKILLS,
   proposedWikilinksStayInVault,
+  skillsInMenu,
   titleIsSolid,
   titleStaysOnTopic,
   withProposedTitle,
@@ -71,6 +73,31 @@ describe("matchSkillFromText", () => {
       matchSkillFromText("Mets en forme correctement les balises markdown du fichier"),
     ).toBeNull();
     expect(matchSkillFromText("Répare le Markdown sans changer le contenu")).toBeNull();
+  });
+});
+
+describe("menu court", () => {
+  it("n'affiche que neuf skills fréquentes", () => {
+    const ids = skillsInMenu().map((s) => s.id);
+    expect(ids).toEqual([
+      "structure",
+      "outline",
+      "enrich",
+      "keypoints",
+      "tags",
+      "template",
+      "brief",
+      "related",
+      "wikilinks",
+    ]);
+  });
+
+  it("laisse le routeur joindre Clarifier et Raccourcir hors menu", () => {
+    const plan = routeSkillsFromIntent({ text: "clarifie et raccourcis cette note" });
+    expect(plan?.skills).toEqual(["clarify", "shorten"]);
+    const menu = skillsInMenu().map((s) => s.id);
+    expect(menu).not.toContain("clarify");
+    expect(menu).not.toContain("shorten");
   });
 });
 
