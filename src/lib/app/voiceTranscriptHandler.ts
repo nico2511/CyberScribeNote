@@ -1,5 +1,6 @@
 import { parseVoiceTranscript } from "$lib/voice/keywords";
 import { translateLangLabel } from "$lib/ai/languages";
+import { combineSkillPlan } from "$lib/ai/skillRouter";
 import { getSkill } from "$lib/ai/skills";
 import { noteBody } from "$lib/note/frontmatter";
 import { notify } from "$lib/stores/notifications";
@@ -22,6 +23,7 @@ export type VoiceTranscriptDeps = {
   appendTranscript: (text: string) => void;
   handleAiAction: (request: AiActionRequest) => Promise<void>;
   handleSkill: (id: SkillId) => Promise<void>;
+  handleSkillPlan: (ids: SkillId[]) => Promise<void>;
 };
 
 export async function processVoiceTranscript(
@@ -124,6 +126,25 @@ export async function processVoiceTranscript(
       key: "voice-cmd",
     });
     await deps.handleSkill(parsed.skillId);
+    return;
+  }
+
+  if (parsed.kind === "skill_plan") {
+    if (!noteSession.selectedPath) {
+      const msg = "Ouvrez une note pour les commandes de conception (PTT).";
+      deps.setStatus(msg);
+      notify({ kind: "warning", title: "Scribe", message: msg, key: "voice-cmd" });
+      return;
+    }
+    const phrase = combineSkillPlan({ skills: parsed.skillIds });
+    deps.setStatus(phrase);
+    notify({
+      kind: "info",
+      title: "Scribe",
+      message: phrase,
+      key: "voice-cmd",
+    });
+    await deps.handleSkillPlan(parsed.skillIds);
     return;
   }
 

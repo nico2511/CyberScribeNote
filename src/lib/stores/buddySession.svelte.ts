@@ -138,6 +138,8 @@ export function handleBuddyAction(
   hooks: {
     openCompanion: () => void;
     runSkill: (id: SkillId) => void;
+    /** Plan multi-skills. Sans ce hook, seule la première skill part. */
+    runSkillPlan?: (ids: SkillId[]) => void;
   },
 ): void {
   if (action.kind === "dismiss") {
@@ -146,6 +148,12 @@ export function handleBuddyAction(
   }
   if (action.kind === "open_companion") {
     hooks.openCompanion();
+    return;
+  }
+  if (action.kind === "skill_plan") {
+    hooks.openCompanion();
+    if (hooks.runSkillPlan) hooks.runSkillPlan(action.skillIds);
+    else if (action.skillIds[0]) hooks.runSkill(action.skillIds[0]);
     return;
   }
   if (action.kind === "skill") {

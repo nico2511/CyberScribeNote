@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import { isGroundedAppendix } from "./grounding";
 import {
   matchSkillFromText,
+  NOTE_SKILLS,
   runSkillLocal,
   isEmptyLlmAppendix,
   parseTagsProposal,
+  type SkillTheme,
 } from "./skills";
 
 const DOCKER = `# Stacks Docker
@@ -17,6 +19,25 @@ services:
   postgres:
     image: postgres:16
 `;
+
+describe("NOTE_SKILLS themes", () => {
+  it("couvre les sept thèmes du cerveau sans retirer le groupe UI", () => {
+    const themes = new Set<SkillTheme>(NOTE_SKILLS.map((s) => s.theme));
+    expect(NOTE_SKILLS).toHaveLength(11);
+    expect(themes).toEqual(
+      new Set([
+        "prise-de-notes",
+        "analyse",
+        "ecriture",
+        "construction",
+        "amelioration",
+        "documents",
+        "connexion",
+      ]),
+    );
+    expect(NOTE_SKILLS.every((s) => s.group)).toBe(true);
+  });
+});
 
 describe("matchSkillFromText", () => {
   it("maps short voice phrases only", () => {

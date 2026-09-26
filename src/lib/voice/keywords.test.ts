@@ -59,6 +59,25 @@ describe("parseVoiceTranscript", () => {
     expect(parseVoiceTranscript("Scribe bonjour").kind).toBe("unknown");
   });
 
+  it("routes a freeform skill sentence the short matcher skips", () => {
+    expect(parseVoiceTranscript("Scribe, analyse ce CR")).toMatchObject({
+      kind: "skill_plan",
+      skillIds: ["keypoints", "brief", "tags"],
+    });
+    expect(
+      parseVoiceTranscript("Scribe, fais un sommaire puis des tags pour classer cette note"),
+    ).toMatchObject({
+      kind: "skill_plan",
+      skillIds: ["outline", "tags"],
+    });
+  });
+
+  it("keeps a long dictation that does not open on a skill verb", () => {
+    const said =
+      "Scribe, aujourd'hui j'ai beaucoup écrit dans cette note sans demander de skill particulière du tout";
+    expect(parseVoiceTranscript(said).kind).toBe("insert");
+  });
+
   it("keeps free dictation as insert", () => {
     expect(parseVoiceTranscript("Aujourd'hui j'ai fait du pain").kind).toBe("insert");
   });

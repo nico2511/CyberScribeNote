@@ -20,6 +20,16 @@ export type SkillId =
   | "related"
   | "wikilinks";
 
+/** Thème du cerveau. Le menu IA garde `group` (shape | write | connect). */
+export type SkillTheme =
+  | "prise-de-notes"
+  | "analyse"
+  | "ecriture"
+  | "construction"
+  | "amelioration"
+  | "documents"
+  | "connexion";
+
 export interface NoteSkill {
   id: SkillId;
   label: string;
@@ -37,8 +47,10 @@ export interface NoteSkill {
   promptMatch: RegExp;
   llmInstruction?: string;
   emptyMessage: string;
-  /** Groupe UI optionnel. */
+  /** Groupe UI optionnel (menu IA ▾). */
   group?: "shape" | "write" | "connect";
+  /** Thème du routeur. Indépendant du groupe d'affichage. */
+  theme: SkillTheme;
 }
 
 export const NOTE_SKILLS: NoteSkill[] = [
@@ -49,6 +61,7 @@ export const NOTE_SKILLS: NoteSkill[] = [
     needsLlm: true,
     applyMode: "replace",
     group: "shape",
+    theme: "amelioration",
     voice: /^(structur\w*|format(?:e|er|age)?)\b/,
     promptMatch: /\b(structurer|formatage)\b/i,
     llmInstruction:
@@ -67,6 +80,7 @@ export const NOTE_SKILLS: NoteSkill[] = [
     needsLlm: false,
     applyMode: "replace",
     group: "shape",
+    theme: "construction",
     voice: /^(sommaire|outline|table des matieres|table des mati\w*)\b/,
     promptMatch: /\b(sommaire|outline|table des mati[eè]res)\b/i,
     emptyMessage: "Pas assez de titres (H2+) pour un sommaire.",
@@ -79,6 +93,7 @@ export const NOTE_SKILLS: NoteSkill[] = [
     applyMode: "replace",
     allowEmpty: true,
     group: "connect",
+    theme: "documents",
     voice: /^(indexer?|indexe)(\s+(ce\s+)?dossier)?\b/,
     promptMatch: /\b(indexer|indexe)\s+(ce\s+)?dossier\b/i,
     emptyMessage: "Ce dossier ne contient aucune note à indexer.",
@@ -91,6 +106,7 @@ export const NOTE_SKILLS: NoteSkill[] = [
     applyMode: "append",
     needsUrlFetch: true,
     group: "write",
+    theme: "documents",
     voice: /^(enrich\w*|lien|url|page web)\b/,
     promptMatch: /\b(enrichir|analyser le lien|depuis l['']url)\b/i,
     llmInstruction:
@@ -107,6 +123,7 @@ export const NOTE_SKILLS: NoteSkill[] = [
     needsLlm: true,
     applyMode: "append",
     group: "write",
+    theme: "analyse",
     voice: /^(points?\s*cles?|keypoints?|essentiel|taches?|todos?|checklist)\b/,
     promptMatch: /\b(points? cl[eé]s?|extraire les actions|checklist)\b/i,
     llmInstruction:
@@ -123,6 +140,7 @@ export const NOTE_SKILLS: NoteSkill[] = [
     needsLlm: true,
     applyMode: "tags",
     group: "connect",
+    theme: "connexion",
     voice: /^(tags?|etiquettes?|label)\b/,
     promptMatch: /\b(tags?|etiquettes?)\b/i,
     llmInstruction:
@@ -140,6 +158,7 @@ export const NOTE_SKILLS: NoteSkill[] = [
     applyMode: "replace",
     allowEmpty: true,
     group: "shape",
+    theme: "prise-de-notes",
     voice: /^(template|modele|daily|journal)\b/,
     promptMatch: /\b(template|mod[eè]le de note|daily note)\b/i,
     emptyMessage: "Template indisponible.",
@@ -151,6 +170,7 @@ export const NOTE_SKILLS: NoteSkill[] = [
     needsLlm: true,
     applyMode: "append",
     group: "write",
+    theme: "ecriture",
     voice: /^(brief|resume court|tl;?dr)\b/,
     promptMatch: /\b(brief|r[eé]sum[eé] court|tl;?dr)\b/i,
     llmInstruction:
@@ -166,6 +186,7 @@ export const NOTE_SKILLS: NoteSkill[] = [
     needsLlm: true,
     applyMode: "append",
     group: "write",
+    theme: "construction",
     voice: /^(plan|concevoir|conception|organise|organiser)\b/,
     promptMatch: /\b(plan de note|concevoir|conception)\b/i,
     llmInstruction:
@@ -183,6 +204,7 @@ export const NOTE_SKILLS: NoteSkill[] = [
     applyMode: "append",
     wantsRag: true,
     group: "connect",
+    theme: "connexion",
     voice: /^(liees?|related|notes? proches|similaires)\b/,
     promptMatch: /\b(notes? li[eé]es|notes? proches|similaires)\b/i,
     emptyMessage: "Aucune note liée trouvée (indexez le RAG dans Réglages).",
@@ -194,6 +216,7 @@ export const NOTE_SKILLS: NoteSkill[] = [
     needsLlm: false,
     applyMode: "replace",
     group: "connect",
+    theme: "connexion",
     voice: /^(wikiliens?|wikilinks?)\b/,
     promptMatch: /\b(wikilinks?|wikiliens?|liens internes)\b/i,
     emptyMessage: "Aucune mention d'une autre note à lier.",
@@ -207,8 +230,9 @@ export function getSkill(id: SkillId): NoteSkill {
 }
 
 /**
- * Match voix / commande courte uniquement.
- * Une consigne libre longue ne doit JAMAIS être détournée vers une skill.
+ * Match voix / commande courte uniquement (≤ 4 mots).
+ * Une consigne libre plus longue reste ignorée ici : elle passe par
+ * `routeSkillsFromIntent` (`skillRouter`), qui peut enchaîner plusieurs skills.
  */
 export function matchSkillFromText(text: string): SkillId | null {
   const t = text

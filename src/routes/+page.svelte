@@ -40,6 +40,8 @@
   } from "$lib/stores/companion";
   import { type AiActionRequest, type TextSelection } from "$lib/voice/commands";
   import { type SkillId } from "$lib/ai/skills";
+  import type { SkillRouteInput } from "$lib/ai/skillRouter";
+  import { runSkillSequence } from "$lib/app/skillPlan";
   import type { BuddyAction } from "$lib/ai/scribeBuddy";
   import {
     buddySession,
@@ -291,6 +293,7 @@
       appendTranscript,
       handleAiAction,
       handleSkill,
+      handleSkillPlan,
     };
   }
 
@@ -488,6 +491,20 @@
     await runSkill(aiDeps(), id);
   }
 
+  async function handleSkillPlan(ids: SkillId[]) {
+    aiQueue.companionOpen = true;
+    await runSkillSequence(ids, handleSkill, (msg) => {
+      statusMessage = msg;
+    });
+  }
+
+  let skillRouteContext = $derived<Omit<SkillRouteInput, "text">>({
+    noteExcerpt: noteSession.content.slice(0, 1200),
+    hasSelection: !!editorSelection?.text,
+    hasUrl: !!editorSelection?.text && /https?:\/\//i.test(editorSelection.text),
+    hasRelated: buddySession.hasRelated,
+  });
+
   async function handleCustomPrompt(instruction: string) {
     await runCustomPrompt(aiDeps(), instruction);
   }
@@ -548,6 +565,7 @@
         aiQueue.companionOpen = true;
       },
       runSkill: (id) => void handleSkill(id),
+      runSkillPlan: (ids) => void handleSkillPlan(ids),
     });
   }
 
@@ -866,6 +884,8 @@
   onBuddyToggle={handleBuddyToggle}
   onCustomPrompt={handleCustomPrompt}
   onSkill={handleSkill}
+  {skillRouteContext}
+  onSkillPlan={(ids) => void handleSkillPlan(ids)}
   ollamaAvailable={ollamaSession.status.available}
   onApply={applySuggestion}
   onDismiss={dismissSuggestion}

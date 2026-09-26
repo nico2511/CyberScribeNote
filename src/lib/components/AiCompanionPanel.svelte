@@ -2,6 +2,7 @@
   import type { AiSuggestion, VoiceStatus } from "$lib/types";
   import SuggestionDiff from "$lib/components/SuggestionDiff.svelte";
   import { NOTE_SKILLS, type SkillId } from "$lib/ai/skills";
+  import { combineSkillPlan, routeSkillsFromIntent, type SkillRouteInput } from "$lib/ai/skillRouter";
   import {
     VOICE_CATEGORY_LABELS,
     VOICE_COMMANDS,
@@ -45,6 +46,9 @@
     onBuddyToggle?: (enabled: boolean) => void;
     onCustomPrompt: (prompt: string) => void;
     onSkill: (id: SkillId) => void;
+    /** Contexte optionnel pour proposer un plan multi-skills à côté du prompt. */
+    skillRouteContext?: Omit<SkillRouteInput, "text">;
+    onSkillPlan?: (ids: SkillId[]) => void;
     onApply: (id: string) => void;
     onDismiss: (id: string) => void;
     onDismissAll: () => void;
@@ -78,6 +82,8 @@
     onBuddyToggle,
     onCustomPrompt,
     onSkill,
+    skillRouteContext = undefined,
+    onSkillPlan,
     onApply,
     onDismiss,
     onDismissAll,
@@ -99,6 +105,14 @@
   let lastDictationPromptId = $state<number | null>(null);
 
   const voiceCategories = ["dictée", "ia", "navigation"] as const;
+
+  const routedPlan = $derived.by(() => {
+    const text = customPrompt.trim();
+    if (text.length < 8) return null;
+    const plan = routeSkillsFromIntent({ text, ...skillRouteContext });
+    if (!plan || plan.skills.length < 2 || plan.confidence < 0.68) return null;
+    return plan;
+  });
 
   const voiceStateLabel = $derived.by(() => {
     if (voiceStatus.error) return "Erreur voix";
@@ -287,7 +301,7 @@
         <div class="mt-1.5 flex items-center justify-between gap-2">
           <p class="min-w-0 text-[10px] text-text-muted">
             Cible : <span class="font-medium text-text">{customTargetLabel}</span>
-            <span class="block text-[9px]">Ctrl+Entrée — dictée PTT possible dans ce champ</span>
+            <span class="block text-[9px]">Ctrl+Entrée envoie le prompt tel quel</span>
           </p>
           <button
             type="button"
@@ -298,6 +312,19 @@
             Lancer →
           </button>
         </div>
+        {#if routedPlan}
+          <div class="mt-2 rounded-xl border border-accent-mint/40 bg-accent-mint/10 px-2 py-1.5">
+            <p class="text-[10px] leading-snug text-text">{combineSkillPlan(routedPlan)}</p>
+            <button
+              type="button"
+              class="mt-1 rounded-lg bg-accent-mint/35 px-2 py-0.5 text-[10px] font-semibold hover:bg-accent-mint/55 disabled:opacity-40"
+              disabled={aiLoading || proactiveLoading || !onSkillPlan}
+              onclick={() => onSkillPlan?.(routedPlan.skills)}
+            >
+              Enchaîner
+            </button>
+          </div>
+        {/if}
 
         <p class="mt-3 text-[10px] font-semibold uppercase tracking-wide text-text-muted">
           Skills rapides
