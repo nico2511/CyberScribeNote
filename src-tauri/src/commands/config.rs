@@ -36,6 +36,41 @@ pub struct AppConfig {
     /// Nombre max de versions par note.
     #[serde(default = "default_history_max")]
     pub note_history_max: u32,
+    /// Vérifier GitHub Releases au démarrage (après splash / assistant).
+    #[serde(default = "default_true")]
+    pub check_updates_on_startup: bool,
+    /// RFC3339 : masque l'avis de démarrage pour `update_snooze_version` jusqu'à cette date.
+    #[serde(default)]
+    pub update_snooze_until: Option<String>,
+    /// Version (sans préfixe `v`) concernée par le report « Plus tard » (7 jours).
+    #[serde(default)]
+    pub update_snooze_version: Option<String>,
+    /// Dernier résultat réussi de vérification GitHub Releases.
+    #[serde(default)]
+    pub last_update_check: Option<LastUpdateCheck>,
+}
+
+/// Résultat d'une consultation de `releases/latest` (champs persistés dans config.json).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LastUpdateCheck {
+    #[serde(default)]
+    pub current: String,
+    #[serde(default)]
+    pub latest: String,
+    #[serde(default)]
+    pub update_available: bool,
+    #[serde(default)]
+    pub release_url: String,
+    #[serde(default)]
+    pub download_url: Option<String>,
+    #[serde(default)]
+    pub name: String,
+    /// Extrait court du corps de release (pas le body complet).
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub checked_at: String,
 }
 
 fn default_true() -> bool {
@@ -82,6 +117,10 @@ impl Default for AppConfig {
             txt_sync_enabled: true,
             note_history_enabled: true,
             note_history_max: default_history_max(),
+            check_updates_on_startup: true,
+            update_snooze_until: None,
+            update_snooze_version: None,
+            last_update_check: None,
         }
     }
 }
@@ -114,10 +153,9 @@ pub fn get_app_config() -> Result<AppConfig, String> {
     Ok(load_config())
 }
 
-#[tauri::command]
-pub fn save_app_config(config: AppConfig) -> Result<(), String> {
+pub(crate) fn persist_config(config: &AppConfig) -> Result<(), String> {
     let ollama_host = validate_ollama_host(&config.ollama_host)?;
-    let mut config = config;
+    let mut config = config.clone();
     config.ollama_host = ollama_host;
 
     let path = config_path()?;
@@ -126,4 +164,16 @@ pub fn save_app_config(config: AppConfig) -> Result<(), String> {
     }
     let json = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
     atomic_write(&path, json.as_bytes())
+}
+
+#[tauri::command]
+pub fn save_app_config(mut config: AppConfig) -> Result<(), String> {
+    // Le report et le dernier check sont écrits par des commandes dédiées.
+    // On les relit au moment de l'enregistrement pour ne pas les écraser
+    // avec une copie périmée du panneau Réglages.
+    let existing = load_config();
+    config.update_snooze_until = existing.update_snooze_until;
+    config.update_snooze_version = existing.update_snooze_version;
+    config.last_update_check = existing.last_update_check;
+    persist_config(&config)
 }
