@@ -1,11 +1,5 @@
-import { hasMeaningfulDiff } from "$lib/ai/textDiff";
-import {
-  repairLocalMarkdown,
-  upsertOutline,
-  wrapWikilinks,
-} from "$lib/markdown/structure";
-import { buildTemplateMarkdown } from "$lib/ai/templates";
 import { extractUrls, isLinkOnlyNote } from "$lib/ai/links";
+import { noteBody, noteBodyRange, parseFrontmatterMeta } from "$lib/note/frontmatter";
 
 export type SkillId =
   | "structure"
@@ -18,13 +12,31 @@ export type SkillId =
   | "brief"
   | "plan"
   | "related"
-  | "wikilinks";
+  | "wikilinks"
+  | "actions"
+  | "questions"
+  | "decisions"
+  | "clarify"
+  | "shorten"
+  | "title"
+  | "proofread"
+  | "sources";
+
+/** Thème du cerveau. Le menu IA garde `group` (shape | write | connect). */
+export type SkillTheme =
+  | "prise-de-notes"
+  | "analyse"
+  | "ecriture"
+  | "construction"
+  | "amelioration"
+  | "documents"
+  | "connexion";
 
 export interface NoteSkill {
   id: SkillId;
   label: string;
   hint: string;
-  /** true = Ollama. false = 100 % local, aucun risque d'hallucination. */
+  /** Toute skill du catalogue rédige via Ollama. Pas de résultat « local » présenté comme l'IA. */
   needsLlm: boolean;
   applyMode: "replace" | "append" | "tags";
   /** Autorise une note vide (templates). */
@@ -37,8 +49,15 @@ export interface NoteSkill {
   promptMatch: RegExp;
   llmInstruction?: string;
   emptyMessage: string;
-  /** Groupe UI optionnel. */
+  /** Groupe du menu court (Forme / Rédaction / Liens). */
   group?: "shape" | "write" | "connect";
+  /**
+   * Bouton dans le menu court (compagnon). Le catalogue entier reste
+   * joignable par le routeur, la voix, Enchaîner et les tips.
+   */
+  inMenu: boolean;
+  /** Thème du routeur. Indépendant du groupe d'affichage. */
+  theme: SkillTheme;
 }
 
 export const NOTE_SKILLS: NoteSkill[] = [
@@ -49,6 +68,8 @@ export const NOTE_SKILLS: NoteSkill[] = [
     needsLlm: true,
     applyMode: "replace",
     group: "shape",
+    inMenu: true,
+    theme: "amelioration",
     voice: /^(structur\w*|format(?:e|er|age)?)\b/,
     promptMatch: /\b(structurer|formatage)\b/i,
     llmInstruction:
@@ -64,23 +85,37 @@ export const NOTE_SKILLS: NoteSkill[] = [
     id: "outline",
     label: "Sommaire",
     hint: "Table des matières depuis les titres",
-    needsLlm: false,
+    needsLlm: true,
     applyMode: "replace",
     group: "shape",
+    inMenu: true,
+    theme: "construction",
     voice: /^(sommaire|outline|table des matieres|table des mati\w*)\b/,
     promptMatch: /\b(sommaire|outline|table des mati[eè]res)\b/i,
+    llmInstruction:
+      "Construis ou mets à jour la section ## Sommaire UNIQUEMENT à partir des titres H2 et plus déjà présents.\n" +
+      "N'invente aucun titre ni section.\n" +
+      "Conserve tout le reste du document (mots, code, liens).\n" +
+      "Réponds uniquement avec le document Markdown complet.",
     emptyMessage: "Pas assez de titres (H2+) pour un sommaire.",
   },
   {
     id: "folderIndex",
     label: "Indexer dossier",
-    hint: "Crée ou met à jour sommaire.md dans ce dossier",
-    needsLlm: false,
+    hint: "Rédige sommaire.md du dossier à partir de l'inventaire local",
+    needsLlm: true,
     applyMode: "replace",
     allowEmpty: true,
     group: "connect",
+    inMenu: false,
+    theme: "documents",
     voice: /^(indexer?|indexe)(\s+(ce\s+)?dossier)?\b/,
     promptMatch: /\b(indexer|indexe)\s+(ce\s+)?dossier\b/i,
+    llmInstruction:
+      "Rédige le fichier sommaire.md de ce dossier en français, à partir de l'inventaire fourni.\n" +
+      "Inclus chaque note et chaque sous-dossier listés, comme wikilien [[chemin]].\n" +
+      "N'ajoute aucune note, aucun fait, aucune URL absents de l'inventaire.\n" +
+      "Réponds uniquement avec le Markdown du sommaire.",
     emptyMessage: "Ce dossier ne contient aucune note à indexer.",
   },
   {
@@ -91,6 +126,8 @@ export const NOTE_SKILLS: NoteSkill[] = [
     applyMode: "append",
     needsUrlFetch: true,
     group: "write",
+    inMenu: true,
+    theme: "documents",
     voice: /^(enrich\w*|lien|url|page web)\b/,
     promptMatch: /\b(enrichir|analyser le lien|depuis l['']url)\b/i,
     llmInstruction:
@@ -107,6 +144,8 @@ export const NOTE_SKILLS: NoteSkill[] = [
     needsLlm: true,
     applyMode: "append",
     group: "write",
+    inMenu: true,
+    theme: "analyse",
     voice: /^(points?\s*cles?|keypoints?|essentiel|taches?|todos?|checklist)\b/,
     promptMatch: /\b(points? cl[eé]s?|extraire les actions|checklist)\b/i,
     llmInstruction:
@@ -123,6 +162,8 @@ export const NOTE_SKILLS: NoteSkill[] = [
     needsLlm: true,
     applyMode: "tags",
     group: "connect",
+    inMenu: true,
+    theme: "connexion",
     voice: /^(tags?|etiquettes?|label)\b/,
     promptMatch: /\b(tags?|etiquettes?)\b/i,
     llmInstruction:
@@ -136,12 +177,19 @@ export const NOTE_SKILLS: NoteSkill[] = [
     id: "template",
     label: "Template",
     hint: "Daily, CR, fiche de lecture, journal projet",
-    needsLlm: false,
+    needsLlm: true,
     applyMode: "replace",
     allowEmpty: true,
     group: "shape",
+    inMenu: true,
+    theme: "prise-de-notes",
     voice: /^(template|modele|daily|journal)\b/,
     promptMatch: /\b(template|mod[eè]le de note|daily note)\b/i,
+    llmInstruction:
+      "Propose un modèle de note en français : daily, compte-rendu, fiche de lecture ou journal de projet, selon le contexte.\n" +
+      "Si la note est vide, réponds avec le document Markdown complet (titres et sections à remplir).\n" +
+      "Si la note a déjà du contenu, réponds uniquement par un bloc ## Template à ajouter, sans réécrire le texte existant.\n" +
+      "N'invente pas de noms, décisions ou faits absents du contexte.",
     emptyMessage: "Template indisponible.",
   },
   {
@@ -151,6 +199,8 @@ export const NOTE_SKILLS: NoteSkill[] = [
     needsLlm: true,
     applyMode: "append",
     group: "write",
+    inMenu: true,
+    theme: "ecriture",
     voice: /^(brief|resume court|tl;?dr)\b/,
     promptMatch: /\b(brief|r[eé]sum[eé] court|tl;?dr)\b/i,
     llmInstruction:
@@ -166,6 +216,8 @@ export const NOTE_SKILLS: NoteSkill[] = [
     needsLlm: true,
     applyMode: "append",
     group: "write",
+    inMenu: false,
+    theme: "construction",
     voice: /^(plan|concevoir|conception|organise|organiser)\b/,
     promptMatch: /\b(plan de note|concevoir|conception)\b/i,
     llmInstruction:
@@ -178,25 +230,181 @@ export const NOTE_SKILLS: NoteSkill[] = [
   {
     id: "related",
     label: "Liées",
-    hint: "Notes du vault sémantiquement proches (RAG)",
-    needsLlm: false,
+    hint: "Notes du vault sémantiquement proches (RAG), rédigées par Ollama",
+    needsLlm: true,
     applyMode: "append",
     wantsRag: true,
     group: "connect",
+    inMenu: true,
+    theme: "connexion",
     voice: /^(liees?|related|notes? proches|similaires)\b/,
     promptMatch: /\b(notes? li[eé]es|notes? proches|similaires)\b/i,
+    llmInstruction:
+      "À partir UNIQUEMENT du contexte RAG fourni, rédige :\n" +
+      "## Notes liées\n" +
+      "- [[titre]] — court extrait déjà présent dans le contexte\n" +
+      "Si rien n'est pertinent, réponds exactement :\n" +
+      "## Notes liées\n\nAucune note liée pertinente dans le vault.\n" +
+      "N'invente aucune note ni extrait.",
     emptyMessage: "Aucune note liée trouvée (indexez le RAG dans Réglages).",
   },
   {
     id: "wikilinks",
     label: "[[Liens]]",
     hint: "Mentions → wikiliens vers le vault",
-    needsLlm: false,
+    needsLlm: true,
     applyMode: "replace",
     group: "connect",
+    inMenu: true,
+    theme: "connexion",
     voice: /^(wikiliens?|wikilinks?)\b/,
     promptMatch: /\b(wikilinks?|wikiliens?|liens internes)\b/i,
-    emptyMessage: "Aucune mention d'une autre note à lier.",
+    llmInstruction:
+      "Transforme en [[wikiliens]] UNIQUEMENT les mentions des titres de vault fournis.\n" +
+      "N'invente pas de note. Ne change pas le fond.\n" +
+      "Réponds uniquement avec le document Markdown complet.",
+    emptyMessage: "Aucune autre note du vault à lier.",
+  },
+  {
+    id: "actions",
+    label: "Actions",
+    hint: "Checklist des tâches déjà mentionnées",
+    needsLlm: true,
+    applyMode: "append",
+    group: "write",
+    inMenu: false,
+    theme: "analyse",
+    voice: /^(actions?)\b/,
+    promptMatch: /\b(actions?|quelles sont les actions)\b/i,
+    llmInstruction:
+      "Extrais UNIQUEMENT les tâches et prochaines étapes DÉJÀ écrites dans CETTE note.\n" +
+      "Réponds par une section :\n## Actions\n- [ ] …\n" +
+      "S'il n'y a aucune action explicite, réponds exactement :\n## Actions\n\n(aucune action déjà mentionnée)\n" +
+      "N'invente rien. Pas d'idées générales, pas de résumé, pas de « Voici ».",
+    emptyMessage: "Aucune action déjà mentionnée dans la note.",
+  },
+  {
+    id: "questions",
+    label: "Questions",
+    hint: "Questions ouvertes et trous déjà visibles",
+    needsLlm: true,
+    applyMode: "append",
+    group: "write",
+    inMenu: false,
+    theme: "analyse",
+    voice: /^(questions?|a creuser|ouvertures?)\b/,
+    promptMatch: /\b(questions?|à creuser|ouvertures?)\b/i,
+    llmInstruction:
+      "Liste UNIQUEMENT les questions ouvertes et les trous DÉJÀ visibles dans CETTE note.\n" +
+      "Réponds par :\n## Questions\n- …\n" +
+      "S'il n'y en a pas, réponds exactement :\n## Questions\n\n(aucune question déjà ouverte)\n" +
+      "Pas de quiz inventé. Pas de « Voici ».",
+    emptyMessage: "Aucune question déjà ouverte dans la note.",
+  },
+  {
+    id: "decisions",
+    label: "Décisions",
+    hint: "Décisions déjà posées — sinon le dire",
+    needsLlm: true,
+    applyMode: "append",
+    group: "write",
+    inMenu: false,
+    theme: "analyse",
+    voice: /^(decisions?|arbitrages?)\b/,
+    promptMatch: /\b(d[eé]cisions?|arbitrages?|on a d[eé]cid[eé])\b/i,
+    llmInstruction:
+      "Extrais UNIQUEMENT les décisions DÉJÀ posées dans CETTE note (CR, réunion, arbitrage).\n" +
+      "Réponds par :\n## Décisions\n- …\n" +
+      "S'il n'y en a aucune, réponds exactement :\n## Décisions\n\nAucune décision déjà posée dans cette note.\n" +
+      "N'en fabrique pas. Pas de « Voici ».",
+    emptyMessage: "Aucune décision déjà posée dans la note.",
+  },
+  {
+    id: "clarify",
+    label: "Clarifier",
+    hint: "Même faits, français plus clair — section en fin de note",
+    needsLlm: true,
+    applyMode: "append",
+    group: "write",
+    inMenu: false,
+    theme: "ecriture",
+    voice: /^(clarifie\w*|eclaircis\w*)\b/,
+    promptMatch: /\b(clarifi\w*|éclaircis\w*|reformule plus clair)\b/i,
+    llmInstruction:
+      "Réécris CETTE note (ou la sélection) en français plus clair.\n" +
+      "MÊMES faits, mêmes noms, mêmes chiffres. N'ajoute rien.\n" +
+      "Pas de « Voici ». Pas de préambule.\n" +
+      "Réponds uniquement avec le texte clarifié.",
+    emptyMessage: "Pas assez de matière à clarifier.",
+  },
+  {
+    id: "shorten",
+    label: "Raccourcir",
+    hint: "Version plus courte, mêmes faits",
+    needsLlm: true,
+    applyMode: "append",
+    group: "write",
+    inMenu: false,
+    theme: "ecriture",
+    voice: /^(raccourcis\w*|condense\w*)\b/,
+    promptMatch: /\b(raccourc\w*|condens\w*|plus court)\b/i,
+    llmInstruction:
+      "Produis une version PLUS COURTE de CETTE note.\n" +
+      "Mêmes faits, mêmes noms, mêmes chiffres. Coupe les répétitions, n'invente rien.\n" +
+      "Pas de « Voici ». Pas de titre « Résumé ». Uniquement le texte court.",
+    emptyMessage: "Pas assez de matière à raccourcir.",
+  },
+  {
+    id: "title",
+    label: "Titre",
+    hint: "Titre d'après le contenu, sans changer un titre déjà bon",
+    needsLlm: true,
+    applyMode: "replace",
+    group: "shape",
+    inMenu: false,
+    theme: "construction",
+    voice: /^(titre|intitule|renomme cette note|renomme la note)\b/,
+    promptMatch: /\b(titre|intitul[eé]|renomme cette note)\b/i,
+    llmInstruction:
+      "Propose UN titre court (8 à 60 caractères) qui décrit CETTE note.\n" +
+      "Uniquement des mots déjà suggérés par le contenu. N'invente pas de sujet.\n" +
+      "Réponds EXACTEMENT, rien d'autre :\ntitre: …",
+    emptyMessage: "Le titre est déjà en place.",
+  },
+  {
+    id: "proofread",
+    label: "Relire",
+    hint: "Orthographe et ponctuation, sans changer le fond",
+    needsLlm: true,
+    applyMode: "replace",
+    group: "shape",
+    inMenu: false,
+    theme: "amelioration",
+    voice: /^(relis\w*|orthographe|typos?|corrige\w*)\b/,
+    promptMatch: /\b(relis\w*|orthographe|typos?|relecture)\b/i,
+    llmInstruction:
+      "Corrige UNIQUEMENT l'orthographe, la typographie et la ponctuation de CETTE note.\n" +
+      "Ne change pas le fond, l'ordre, les titres ni les faits.\n" +
+      "Réponds avec le document complet corrigé. Pas de commentaire.",
+    emptyMessage: "Rien à relire — le texte est déjà propre.",
+  },
+  {
+    id: "sources",
+    label: "Sources",
+    hint: "Section Sources rédigée par Ollama, uniquement les URL déjà écrites",
+    needsLlm: true,
+    applyMode: "append",
+    group: "connect",
+    inMenu: false,
+    theme: "documents",
+    voice: /^(sources?|references?|bibliographie)\b/,
+    promptMatch: /\b(sources?|r[eé]f[eé]rences?|bibliographie)\b/i,
+    llmInstruction:
+      "Rédige une section ## Sources qui liste UNIQUEMENT les URL déjà fournies.\n" +
+      "Pas de fetch, pas de nouvelle URL, pas de résumé inventé.\n" +
+      "Format :\n## Sources\n- [libellé court déjà dans la note, sinon le domaine](url)\n" +
+      "Réponds uniquement avec cette section.",
+    emptyMessage: "Aucune URL à lister, ou la section Sources est déjà là.",
   },
 ];
 
@@ -206,9 +414,15 @@ export function getSkill(id: SkillId): NoteSkill {
   return skill;
 }
 
+/** Skills affichées comme boutons. Le reste du catalogue passe par le routeur. */
+export function skillsInMenu(): NoteSkill[] {
+  return NOTE_SKILLS.filter((s) => s.inMenu);
+}
+
 /**
- * Match voix / commande courte uniquement.
- * Une consigne libre longue ne doit JAMAIS être détournée vers une skill.
+ * Match voix / commande courte uniquement (≤ 4 mots).
+ * Une consigne libre plus longue reste ignorée ici : elle passe par
+ * `routeSkillsFromIntent` (`skillRouter`), qui peut enchaîner plusieurs skills.
  */
 export function matchSkillFromText(text: string): SkillId | null {
   const t = text
@@ -227,59 +441,131 @@ export function matchSkillFromText(text: string): SkillId | null {
   return null;
 }
 
-export interface SkillLocalContext {
-  titles?: string[];
-  currentTitle?: string;
-  noteContext?: string;
-  /** Bloc RAG déjà formaté pour skill related. */
-  ragBlock?: string;
+/** Cibles `[[…]]` (sans ancre ni alias). */
+export function wikilinkTargets(markdown: string): string[] {
+  return [...markdown.matchAll(/\[\[([^\]|#]+)/g)].map((m) => m[1].trim()).filter(Boolean);
 }
 
-export interface SkillLocalResult {
-  proposed: string;
-  reason: string;
-  applyMode?: NoteSkill["applyMode"];
+/**
+ * Les wikiliens nouveaux doivent être des titres du vault (ou déjà présents dans la note).
+ */
+export function proposedWikilinksStayInVault(
+  original: string,
+  proposed: string,
+  titles: string[],
+): boolean {
+  const allowed = new Set(
+    [...titles, ...wikilinkTargets(original)].map((t) => t.trim().toLowerCase()).filter(Boolean),
+  );
+  return wikilinkTargets(proposed).every((t) => allowed.has(t.toLowerCase()));
 }
 
-/** Exécute la partie déterministe d'une skill (0 hallucination). */
-export function runSkillLocal(
-  id: SkillId,
-  markdown: string,
-  ctx: SkillLocalContext = {},
-): SkillLocalResult | null {
-  if (id === "outline") {
-    const proposed = upsertOutline(markdown);
-    if (!proposed || !hasMeaningfulDiff(markdown, proposed)) return null;
-    return { proposed, reason: "Sommaire généré depuis les titres de la note." };
-  }
-  if (id === "structure") {
-    const proposed = repairLocalMarkdown(markdown);
-    if (!hasMeaningfulDiff(markdown, proposed)) return null;
-    return {
-      proposed,
-      reason: "Réparation locale (titres, fences, YAML/Docker).",
-    };
-  }
-  if (id === "wikilinks") {
-    const proposed = wrapWikilinks(markdown, ctx.titles ?? [], ctx.currentTitle);
-    if (!proposed || !hasMeaningfulDiff(markdown, proposed)) return null;
-    return { proposed, reason: "Mentions du vault transformées en [[wikiliens]]." };
-  }
-  if (id === "template") {
-    const { proposed, reason } = buildTemplateMarkdown(markdown, ctx.noteContext);
-    const mode: NoteSkill["applyMode"] = markdown.trim() ? "append" : "replace";
-    return { proposed, reason, applyMode: mode };
-  }
-  if (id === "related") {
-    const rag = (ctx.ragBlock ?? "").trim();
-    if (!rag) return null;
-    return {
-      proposed: `\n\n---\n\n## Notes liées\n\n${rag}\n`,
-      reason: "Extraits proches dans le vault (RAG).",
-      applyMode: "append",
-    };
-  }
-  return null;
+export function hasMarkdownSection(markdown: string, title: string): boolean {
+  const wanted = title
+    .normalize("NFD")
+    .replace(/\p{M}/gu, "")
+    .toLowerCase();
+  return markdown.split("\n").some((line) => {
+    const m = line.match(/^##\s+(.+?)\s*$/);
+    if (!m) return false;
+    const got = m[1]
+      .normalize("NFD")
+      .replace(/\p{M}/gu, "")
+      .toLowerCase();
+    return got === wanted || got.startsWith(`${wanted} `);
+  });
+}
+
+const WEAK_TITLES = new Set([
+  "note",
+  "notes",
+  "sans titre",
+  "untitled",
+  "titre",
+  "todo",
+  "brouillon",
+  "nouveau",
+  "nouvelle note",
+  "document",
+]);
+
+function isSolidTitleText(raw: string): boolean {
+  const t = raw.trim();
+  if (t.length < 8) return false;
+  const n = t
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{M}/gu, "");
+  return !WEAK_TITLES.has(n);
+}
+
+/** Titre H1 ou YAML déjà assez précis pour ne pas le remplacer. */
+export function titleIsSolid(content: string): boolean {
+  const h1 = noteBody(content).match(/^#\s+(.+)$/m)?.[1]?.trim() ?? "";
+  const fm = parseFrontmatterMeta(content).title.trim();
+  return isSolidTitleText(h1) || isSolidTitleText(fm);
+}
+
+export function parseTitleProposal(text: string): string | null {
+  const line = (text.match(/titre\s*:\s*(.+)/i)?.[1] ?? text.split("\n")[0] ?? "")
+    .replace(/^#+\s*/, "")
+    .trim();
+  if (line.length < 3 || line.length > 80) return null;
+  if (/^(voici|titre)\b/i.test(line)) return null;
+  return line;
+}
+
+/** Le titre proposé reprend au moins un mot significatif de la note. */
+export function titleStaysOnTopic(note: string, title: string): boolean {
+  const titleTokens = significantEnough(title);
+  if (!titleTokens.length) return false;
+  const noteSet = new Set(significantEnough(note));
+  return titleTokens.some((t) => noteSet.has(t));
+}
+
+function significantEnough(text: string): string[] {
+  return (text.match(/[\p{L}\p{N}]{4,}/gu) ?? [])
+    .map((w) => w.toLowerCase().normalize("NFD").replace(/\p{M}/gu, ""))
+    .filter((w) => w.length >= 4);
+}
+
+/** Pose le titre en H1 et, s'il y a un frontmatter, dans `title:`. */
+export function withProposedTitle(content: string, title: string): string {
+  const safe = title.replace(/[\r\n#"]/g, " ").replace(/\s+/g, " ").trim();
+  if (!safe) return content;
+  const next = upsertFrontmatterTitle(content, safe);
+  const range = noteBodyRange(next);
+  const body = next.slice(range.start);
+  const newBody = /^#\s+\S/m.test(body)
+    ? body.replace(/^#\s+.*$/m, `# ${safe}`)
+    : `# ${safe}\n\n${body.replace(/^\n+/, "")}`;
+  return next.slice(0, range.start) + newBody;
+}
+
+function upsertFrontmatterTitle(content: string, title: string): string {
+  if (!content.startsWith("---")) return content;
+  const end = content.indexOf("---", 3);
+  if (end === -1) return content;
+  const fm = content.slice(3, end);
+  const rest = content.slice(end + 3);
+  const lines = fm.split("\n").filter((l) => !l.trim().startsWith("title:"));
+  const core = lines.filter((l, i) => !(i === 0 && l.trim() === ""));
+  core.unshift(`title: "${title}"`);
+  const body = rest.startsWith("\n") ? rest : `\n${rest}`;
+  return `---\n${core.join("\n").replace(/^\n+|\n+$/g, "")}\n---${body}`;
+}
+
+/** Sélection courte : Clarifier remplace le passage. Au-delà, section en fin de note. */
+export const CLARIFY_SELECTION_MAX = 800;
+
+export function wrapNamedSection(heading: string, body: string): string {
+  let trimmed = body.trim();
+  trimmed = trimmed.replace(
+    /^(?:voici|voila|voilà)\s+(?:la\s+)?(?:version\s+)?(?:claire|courte)?\s*[:.]?\s*/i,
+    "",
+  );
+  if (/^##\s+/m.test(trimmed)) return trimmed.endsWith("\n") ? trimmed : `${trimmed}\n`;
+  return `## ${heading}\n\n${trimmed}\n`;
 }
 
 export function isEmptyLlmAppendix(text: string): boolean {
@@ -288,6 +574,9 @@ export function isEmptyLlmAppendix(text: string): boolean {
     !t ||
     /\(aucune t[aâ]che\)/.test(t) ||
     /aucune t[aâ]che explicite/.test(t) ||
+    /\(aucune action/.test(t) ||
+    /\(aucune question/.test(t) ||
+    /aucune d[eé]cision d[eé]j[aà] pos[eé]e/.test(t) ||
     /^n[/'']?a rien a (ajouter|proposer)/.test(t)
   );
 }

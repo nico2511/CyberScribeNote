@@ -1,6 +1,7 @@
 import type { AiAction } from "$lib/types";
 import type { TranslateLang } from "$lib/ai/languages";
 import { parseTranslateVoiceLang } from "$lib/ai/languages";
+import { opensSkillIntent, routeSkillsFromIntent } from "$lib/ai/skillRouter";
 import { matchSkillFromText, type SkillId } from "$lib/ai/skills";
 
 export interface VoiceCommand {
@@ -35,13 +36,20 @@ export interface VoiceSkill {
   skillId: SkillId;
 }
 
+/** Consigne libre : plusieurs skills dans l'ordre du routeur. */
+export interface VoiceSkillPlan {
+  kind: "skill_plan";
+  skillIds: SkillId[];
+}
+
 export type ParsedVoice =
   | VoiceCommand
   | VoiceSearch
   | VoiceOpen
   | VoiceInsert
   | VoiceUnknown
-  | VoiceSkill;
+  | VoiceSkill
+  | VoiceSkillPlan;
 
 const FILLER_RE =
   /^(?:(?:euh|heu|eu|bah|ben|bon|alors|ok|okay|ouais|oui|ouai|hey|salut|hello|cest|c est|cet)\s+)*/;
@@ -113,6 +121,16 @@ function matchCommand(
 
   const skillId = matchSkillFromText(rest);
   if (skillId) return { kind: "skill", skillId };
+
+  // Texte libre : le match court s'arrête au-delà de 4 mots, ou ne connaît pas
+  // le verbe (« analyse ce CR »). On ne route que si la phrase s'ouvre comme une commande.
+  if (opensSkillIntent(rest)) {
+    const plan = routeSkillsFromIntent({ text: rest });
+    if (plan && plan.confidence >= 0.7 && plan.skills.length > 0) {
+      if (plan.skills.length === 1) return { kind: "skill", skillId: plan.skills[0] };
+      return { kind: "skill_plan", skillIds: plan.skills };
+    }
+  }
 
   if (/^(?:re)?cherch/.test(rest)) {
     const query =

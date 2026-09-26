@@ -61,6 +61,12 @@ export function extractLinksWithTitles(text: string): ExtractedLink[] {
   return out;
 }
 
+/** Toute URL de la proposition doit déjà figurer dans la source. */
+export function proposedUrlsStayInSource(source: string, proposed: string): boolean {
+  const allowed = new Set(extractUrls(source));
+  return extractUrls(proposed).every((url) => allowed.has(url));
+}
+
 /** Liste Markdown `- [titre](url)` ou `- url` à partir du texte source. */
 export function formatExtractedLinksList(text: string): string | null {
   const links = extractLinksWithTitles(text);
