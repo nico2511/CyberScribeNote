@@ -1,3 +1,4 @@
+import { extractUrls } from "$lib/ai/links";
 import {
   getSkill,
   matchSkillFromText,
@@ -53,11 +54,19 @@ const PIPELINE_ORDER: SkillId[] = [
   "folderIndex",
   "template",
   "structure",
+  "proofread",
   "enrich",
+  "sources",
   "plan",
   "outline",
+  "title",
   "keypoints",
+  "decisions",
+  "actions",
+  "questions",
   "brief",
+  "clarify",
+  "shorten",
   "tags",
   "related",
   "wikilinks",
@@ -179,6 +188,46 @@ const EXPLICIT: { id: SkillId; re: RegExp; why: string }[] = [
     re: /\b(wikilinks?|wikiliens?|liens internes)\b/,
     why: "Wikiliens demandés.",
   },
+  {
+    id: "actions",
+    re: /\b(actions?|taches?|todos?|quelles sont les actions)\b/,
+    why: "Actions demandées.",
+  },
+  {
+    id: "questions",
+    re: /\b(questions?|a creuser|ouvertures?)\b/,
+    why: "Questions demandées.",
+  },
+  {
+    id: "decisions",
+    re: /\b(decisions?|arbitrages?|on a decide)\b/,
+    why: "Décisions demandées.",
+  },
+  {
+    id: "clarify",
+    re: /\b(clarifi\w*|eclaircis\w*|reformule plus clair)\b/,
+    why: "Clarifier demandé.",
+  },
+  {
+    id: "shorten",
+    re: /\b(raccourc\w*|condense\w*|plus court)\b/,
+    why: "Raccourcir demandé.",
+  },
+  {
+    id: "title",
+    re: /\b(titre|intitule|renomme (cette|la) note)\b/,
+    why: "Titre demandé.",
+  },
+  {
+    id: "proofread",
+    re: /\b(relis\w*|orthographe|typos?|relecture|corrige\w*)\b/,
+    why: "Relire demandé.",
+  },
+  {
+    id: "sources",
+    re: /\b(sources?|references?|bibliographie)\b/,
+    why: "Sources demandées.",
+  },
 ];
 
 const CR_RE = /\b(compte[\s-]*rendu|\bcr\b)\b/;
@@ -186,7 +235,7 @@ const ANALYSE_RE = BUNDLES[0].re;
 
 /** Verbe en tête de phrase (après politesse) : la voix peut quitter le match court. */
 const INTENT_START_RE =
-  /^(?:analys\w*|structur\w*|sommaire|brief|tags?|etiquettes?|plan|template|modele|enrich\w*|indexe\w*|indexer|relie\w*|constru\w*|amelior\w*|redige\w*|ecri\w*|points?|wikiliens?|wikilinks?|organis\w*|fais|fait|faire|ajoute|proposer|propose|mets)\b/;
+  /^(?:analys\w*|structur\w*|sommaire|brief|tags?|etiquettes?|plan|template|modele|enrich\w*|indexe\w*|indexer|relie\w*|constru\w*|amelior\w*|redige\w*|ecri\w*|points?|wikiliens?|wikilinks?|organis\w*|fais|fait|faire|ajoute|proposer|propose|mets|actions?|questions?|decisions?|arbitrages?|clarifi\w*|eclaircis\w*|raccourc\w*|condense\w*|titre|intitule|renomme|relis\w*|orthographe|typos?|corrige\w*|sources?|references?|bibliographie)\b/;
 
 export function normalizeIntentText(raw: string): string {
   return raw
@@ -345,6 +394,12 @@ function routeByRules(input: SkillRouteInput): SkillRoutePlan | null {
     bump(scores, whys, "structure", 0.8, why);
     bump(scores, whys, "keypoints", 0.76, why);
     bump(scores, whys, "tags", 0.7, why);
+    const blob = `${input.noteExcerpt ?? ""}\n${input.text}`;
+    if (input.hasUrl || extractUrls(blob).length > 0) {
+      const srcWhy = "Des URL sont déjà dans le document.";
+      reasons.push(srcWhy);
+      bump(scores, whys, "sources", 0.73, srcWhy);
+    }
   }
 
   const mentionsVault = /\b(vault|rapproch\w*|liee\w*|lier)\b/.test(norm);

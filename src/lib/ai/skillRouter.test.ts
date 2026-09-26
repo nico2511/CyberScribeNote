@@ -84,6 +84,37 @@ describe("routeSkillsFromIntent", () => {
     expect(plan?.why.toLowerCase()).toContain("import");
   });
 
+  it("ajoute Sources au document importé quand une URL est déjà là", () => {
+    const plan = routeSkillsFromIntent({
+      text: "",
+      docImported: true,
+      noteExcerpt: "Voir https://example.com/guide-import pour le détail.",
+    });
+    expect(plan?.skills).toEqual(["structure", "sources", "keypoints", "tags"]);
+  });
+
+  it("glisse Décisions ou Actions dans l'analyse sans dépasser 4 skills", () => {
+    expect(ids("analyse ce CR et les décisions")).toEqual([
+      "keypoints",
+      "decisions",
+      "brief",
+      "tags",
+    ]);
+    expect(ids("analyse les actions de ce CR")).toEqual(["keypoints", "actions", "brief", "tags"]);
+    expect(ids("analyse les décisions et les actions de ce CR")).toEqual([
+      "keypoints",
+      "decisions",
+      "actions",
+      "brief",
+    ]);
+  });
+
+  it("enchaîne Clarifier puis Raccourcir", () => {
+    const plan = routeSkillsFromIntent({ text: "clarifie et raccourcis cette note" });
+    expect(plan?.skills).toEqual(["clarify", "shorten"]);
+    expect(combineSkillPlan(plan!)).toBe("Je lance Clarifier puis Raccourcir.");
+  });
+
   it("lit une note longue inachevée seulement si la consigne est vague", () => {
     const excerpt = `${"paragraphe ".repeat(80)}`;
     expect(excerpt.length).toBeGreaterThan(500);

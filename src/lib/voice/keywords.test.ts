@@ -59,6 +59,13 @@ describe("parseVoiceTranscript", () => {
     expect(parseVoiceTranscript("Scribe bonjour").kind).toBe("unknown");
   });
 
+  it("keeps Scribe corrige as the AI correct command", () => {
+    expect(parseVoiceTranscript("Scribe, corrige")).toMatchObject({
+      kind: "ai",
+      action: "correct",
+    });
+  });
+
   it("routes a freeform skill sentence the short matcher skips", () => {
     expect(parseVoiceTranscript("Scribe, analyse ce CR")).toMatchObject({
       kind: "skill_plan",
@@ -69,6 +76,18 @@ describe("parseVoiceTranscript", () => {
     ).toMatchObject({
       kind: "skill_plan",
       skillIds: ["outline", "tags"],
+    });
+    expect(parseVoiceTranscript("Scribe, clarifie et raccourcis cette note")).toMatchObject({
+      kind: "skill_plan",
+      skillIds: ["clarify", "shorten"],
+    });
+    expect(parseVoiceTranscript("Scribe, relis")).toMatchObject({
+      kind: "skill",
+      skillId: "proofread",
+    });
+    expect(parseVoiceTranscript("Scribe, sources")).toMatchObject({
+      kind: "skill",
+      skillId: "sources",
     });
   });
 

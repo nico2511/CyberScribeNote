@@ -126,6 +126,47 @@ describe("scanBuddyTip", () => {
     expect(tip?.action).toEqual({ kind: "skill", skillId: "brief" });
   });
 
+  it("préfère le plan d'analyse au tip Liées sur une note longue", () => {
+    const tip = scanBuddyTip({
+      markdown: "mot ".repeat(160),
+      typing: false,
+      busy: false,
+      hasSuggestions: false,
+      noteOpen: true,
+      hasRelated: true,
+    });
+    expect(tip?.id).toBe("analyse-plan");
+    expect(tip?.action).toEqual({
+      kind: "skill_plan",
+      skillIds: ["keypoints", "brief", "tags"],
+    });
+  });
+
+  it("propose Sources quand plusieurs URL sont déjà dans la note", () => {
+    const tip = scanBuddyTip({
+      markdown:
+        "Voir https://example.com/alpha et https://example.com/bravo dans le texte de la note.",
+      typing: false,
+      busy: false,
+      hasSuggestions: false,
+      noteOpen: true,
+    });
+    expect(tip?.id).toBe("sources");
+    expect(tip?.action).toEqual({ kind: "skill", skillId: "sources" });
+  });
+
+  it("propose Décisions sur un CR qui a déjà un brief", () => {
+    const tip = scanBuddyTip({
+      markdown: `## Brief\n\n${"mot ".repeat(100)}\n\nCompte rendu de la réunion.\n`,
+      typing: false,
+      busy: false,
+      hasSuggestions: false,
+      noteOpen: true,
+    });
+    expect(tip?.id).toBe("decisions");
+    expect(tip?.action).toEqual({ kind: "skill", skillId: "decisions" });
+  });
+
   it("propose les tags seuls si le brief existe déjà", () => {
     const tip = scanBuddyTip({
       markdown: `## Brief\n\n${"mot ".repeat(160)}`,

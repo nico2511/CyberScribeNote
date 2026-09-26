@@ -16,12 +16,19 @@ import {
 import { formatExtractedLinksList, isLinkOnlyNote } from "$lib/ai/links";
 import { sanitizeAiOutput } from "$lib/ai/sanitize";
 import {
+  CLARIFY_SELECTION_MAX,
   extractUrls,
   formatEnrichContext,
   getSkill,
+  hasMarkdownSection,
   isEmptyLlmAppendix,
   parseTagsProposal,
+  parseTitleProposal,
   runSkillLocal,
+  titleIsSolid,
+  titleStaysOnTopic,
+  withProposedTitle,
+  wrapNamedSection,
   type SkillId,
 } from "$lib/ai/skills";
 import { hasMeaningfulDiff } from "$lib/ai/textDiff";
@@ -335,20 +342,15 @@ export async function runSkill(deps: AiOrchestratorDeps, id: SkillId): Promise<v
     return;
   }
 
-  const preferLocal = !skill.needsLlm || (skill.id === "structure" && !deps.ollamaAvailable);
-  const local = preferLocal
-    ? runSkillLocal(id, targetText, {
-        titles,
-        currentTitle: noteStem(pathAtStart),
-        noteContext: deps.noteContext.trim(),
-      })
-    : skill.id === "structure"
-      ? null
-      : runSkillLocal(id, targetText, {
-          titles,
-          currentTitle: noteStem(pathAtStart),
-          noteContext: deps.noteContext.trim(),
-        });
+  const localCtx = {
+    titles,
+    currentTitle: noteStem(pathAtStart),
+    noteContext: deps.noteContext.trim(),
+  };
+  // Structurer et Relire : le filet local ne remplace le modèle que si Ollama est down.
+  const skipLocal =
+    (skill.id === "structure" || skill.id === "proofread") && deps.ollamaAvailable;
+  const local = skipLocal ? null : runSkillLocal(id, targetText, localCtx);
   if (local) {
     const mode = local.applyMode ?? skill.applyMode;
     pushSuggestion({
@@ -373,6 +375,16 @@ export async function runSkill(deps: AiOrchestratorDeps, id: SkillId): Promise<v
           : undefined,
     });
     deps.setStatus(`${skill.label} prêt — appliquez ou ignorez.`);
+    return;
+  }
+
+  if (id === "title" && titleIsSolid(deps.content)) {
+    deps.setStatus(skill.emptyMessage);
+    return;
+  }
+
+  if (id === "decisions" && hasMarkdownSection(targetText, "Décisions")) {
+    deps.setStatus(skill.emptyMessage);
     return;
   }
 
@@ -424,6 +436,67 @@ export async function runSkill(deps: AiOrchestratorDeps, id: SkillId): Promise<v
     if (!stillCurrentAiRequest(epoch, pathAtStart)) return;
 
     let cleaned = sanitizeAiOutput(result, "custom");
+    if (skill.id === "title") {
+      const title = parseTitleProposal(cleaned);
+      const noteForTitle = noteBody(deps.content) || targetText;
+      if (!title || !titleStaysOnTopic(noteForTitle, title)) {
+        deps.setStatus(skill.emptyMessage);
+        return;
+      }
+      const proposed = withProposedTitle(deps.content, title);
+      if (!hasMeaningfulDiff(deps.content, proposed)) {
+        deps.setStatus(skill.emptyMessage);
+        return;
+      }
+      pushSuggestion({
+        action: "custom",
+        skillId: id,
+        label: skill.label,
+        scope: "titre",
+        proposedText: proposed,
+        originalText: deps.content,
+        source: "manual",
+        notePath: pathAtStart,
+        applyMode: "replace",
+        reason: `Titre proposé : ${title}`,
+      });
+      deps.setStatus(`${skill.label} prêt — appliquez ou ignorez.`);
+      return;
+    }
+
+    if (skill.id === "clarify") {
+      const sel = deps.editorSelection;
+      const selText = sel?.text.trim() ?? "";
+      const shortSel = selText.length >= 8 && selText.length <= CLARIFY_SELECTION_MAX;
+      if (shortSel && sel) {
+        const proposed = cleaned.trim();
+        if (!proposed || isEmptyLlmAppendix(proposed) || !isGroundedTransform(selText, proposed)) {
+          deps.setStatus(skill.emptyMessage);
+          return;
+        }
+        pushSuggestion({
+          action: "custom",
+          skillId: id,
+          label: skill.label,
+          scope: "sélection",
+          proposedText: proposed,
+          originalText: selText,
+          source: "manual",
+          notePath: pathAtStart,
+          applyMode: "replace",
+          reason: skill.hint,
+          selection: { start: sel.start, end: sel.end, text: sel.text },
+        });
+        deps.setStatus(`${skill.label} prêt — la sélection sera remplacée.`);
+        return;
+      }
+      cleaned = wrapNamedSection("Version claire", cleaned);
+    }
+
+    if (skill.id === "shorten") {
+      cleaned = wrapNamedSection("Version courte", cleaned);
+    }
+
     if (skill.applyMode === "tags") {
       const tags = parseTagsProposal(cleaned);
       if (!tags.length) {

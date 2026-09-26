@@ -13,14 +13,14 @@ Chaque skill du catalogue TypeScript porte un `theme`. Le `group` (`shape` | `wr
 | Thème | Rôle | Skills |
 | --- | --- | --- |
 | `prise-de-notes` | Démarrer une note | Template |
-| `analyse` | Extraire | Points clés |
-| `ecriture` | Rédiger court | Brief |
-| `construction` | Bâtir la forme | Plan, Sommaire |
-| `amelioration` | Réparer sans changer le fond | Structurer |
-| `documents` | Source externe ou dossier | Lien, Indexer dossier |
+| `analyse` | Extraire | Points clés, Actions, Questions, Décisions |
+| `ecriture` | Rédiger | Brief, Clarifier, Raccourcir |
+| `construction` | Bâtir la forme | Plan, Sommaire, Titre |
+| `amelioration` | Réparer sans changer le fond | Structurer, Relire |
+| `documents` | Source externe ou dossier | Lien, Indexer dossier, Sources |
 | `connexion` | Classer et relier le vault | Tags, Liées, [[Liens]] |
 
-« Lien » est dans `documents` : il ingère une page ou un README. « Brief » porte `ecriture`.
+« Lien » va chercher une page. « Sources » liste seulement les URL déjà écrites, sans réseau. « Brief » reste le résumé court ; Clarifier et Raccourcir réécrivent les mêmes faits.
 
 ## Combinabilité
 
@@ -44,10 +44,13 @@ Retour : `SkillRoutePlan` ou `null`.
 Exemples de règles :
 
 - « analyse ce CR » → Points clés, Brief, Tags.
+- « analyse ce CR et les décisions » → Points clés, Décisions, Brief, Tags.
+- « analyse les actions de ce CR » → Points clés, Actions, Brief, Tags.
+- « clarifie et raccourcis » → Clarifier, puis Raccourcir.
 - « construis cette note et ajoute des tags » → Plan, Sommaire, Tags.
 - « relie cette note » → Liées, puis Wikiliens.
-- document importé → Structurer, Points clés, Tags.
-- commande courte (`sommaire`, ≤ 4 mots) → un seul skill, comme `matchSkillFromText`.
+- document importé → Structurer, Points clés, Tags. S'il contient déjà une URL : Structurer, Sources, Points clés, Tags.
+- commande courte (`sommaire`, `relis`, `sources`, ≤ 4 mots) → un seul skill, comme `matchSkillFromText`. « Scribe, corrige » reste la commande IA corriger ; Relire se lance par « relis », « orthographe » ou le menu.
 
 `combineSkillPlan(plan)` décrit le plan pour l’UI : « Je lance Points clés, Brief puis Tags. »
 

@@ -1,6 +1,7 @@
 import { extractOutline } from "$lib/markdown/bridge";
 import { bodyHasTypoLines } from "$lib/note/scanTypos";
 import { extractUrls, isLinkOnlyNote } from "$lib/ai/links";
+import { hasMarkdownSection } from "$lib/ai/skills";
 import { routeSkillsFromIntent } from "$lib/ai/skillRouter";
 import type { SkillId } from "$lib/ai/skills";
 
@@ -211,6 +212,52 @@ export function scanBuddyTip(input: BuddyScanInput): BuddyTip | null {
     };
   }
 
+  const noTags = !/tags:\s*\[/i.test(body);
+  const analyseIds = analysePlanIds();
+  if (
+    analyseIds &&
+    body.length > 520 &&
+    noTags &&
+    !hasBriefSection(body) &&
+    !hasKeypointsSection(body)
+  ) {
+    return {
+      id: "analyse-plan",
+      mood: "idea",
+      message: "Note longue — points clés, brief, puis tags ?",
+      actionLabel: "Enchaîner",
+      action: { kind: "skill_plan", skillIds: analyseIds },
+      priority: 48,
+    };
+  }
+
+  if (extractUrls(body).length >= 2 && !hasMarkdownSection(body, "Sources")) {
+    return {
+      id: "sources",
+      mood: "idea",
+      message: "Plusieurs liens — je peux lister les sources.",
+      actionLabel: "Sources",
+      action: { kind: "skill", skillId: "sources" },
+      priority: 46,
+    };
+  }
+
+  if (
+    hasBriefSection(body) &&
+    body.length > 360 &&
+    !hasMarkdownSection(body, "Décisions") &&
+    /\b(compte[\s-]*rendu|r[eé]union)\b/i.test(body)
+  ) {
+    return {
+      id: "decisions",
+      mood: "idea",
+      message: "Compte rendu sans décisions — je peux les extraire.",
+      actionLabel: "Décisions",
+      action: { kind: "skill", skillId: "decisions" },
+      priority: 44,
+    };
+  }
+
   if (input.hasRelated && body.length > 120) {
     return {
       id: "related",
@@ -218,7 +265,7 @@ export function scanBuddyTip(input: BuddyScanInput): BuddyTip | null {
       message: "Des notes du vault semblent proches.",
       actionLabel: "Liées",
       action: { kind: "skill", skillId: "related" },
-      priority: 52,
+      priority: 36,
     };
   }
 
@@ -241,25 +288,6 @@ export function scanBuddyTip(input: BuddyScanInput): BuddyTip | null {
       actionLabel: "Voir",
       action: { kind: "open_companion" },
       priority: 40,
-    };
-  }
-
-  const noTags = !/tags:\s*\[/i.test(body);
-  const analyseIds = analysePlanIds();
-  if (
-    analyseIds &&
-    body.length > 520 &&
-    noTags &&
-    !hasBriefSection(body) &&
-    !hasKeypointsSection(body)
-  ) {
-    return {
-      id: "analyse-plan",
-      mood: "idea",
-      message: "Note longue — points clés, brief, puis tags ?",
-      actionLabel: "Enchaîner",
-      action: { kind: "skill_plan", skillIds: analyseIds },
-      priority: 22,
     };
   }
 
