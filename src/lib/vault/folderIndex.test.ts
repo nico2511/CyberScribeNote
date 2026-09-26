@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   buildFolderSommaireMarkdown,
+  collectFolderInventory,
   findVaultEntry,
+  formatFolderInventoryContext,
+  sommaireMentionsInventory,
   sommairePathForFolder,
 } from "./folderIndex";
 import type { VaultEntry } from "$lib/types";
@@ -50,5 +53,18 @@ describe("folderIndex", () => {
     const empty: VaultEntry = { name: "vide", path: "vide", isDir: true, children: [] };
     const md = buildFolderSommaireMarkdown("vide", empty);
     expect(md).toContain("Aucune note dans ce dossier");
+    expect(collectFolderInventory("vide", empty)).toBeNull();
+  });
+
+  it("inventorie pour Ollama et refuse un sommaire qui oublie une note", () => {
+    const folder = findVaultEntry(TREE, "projets")!;
+    const inv = collectFolderInventory("projets", folder);
+    expect(inv?.notes).toEqual(["projets/alpha.md"]);
+    expect(formatFolderInventoryContext(inv!)).toContain("[[projets/alpha]]");
+    expect(formatFolderInventoryContext(inv!)).toContain("nested");
+    expect(
+      sommaireMentionsInventory("# Sommaire\n\n- [[projets/alpha]]\n- [[projets/nested/sommaire]]", inv!),
+    ).toBe(true);
+    expect(sommaireMentionsInventory("# Sommaire\n\nRien ici.", inv!)).toBe(false);
   });
 });

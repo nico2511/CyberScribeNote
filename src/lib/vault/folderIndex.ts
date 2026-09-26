@@ -25,15 +25,16 @@ export function wikilinkPath(noteRelativePath: string): string {
   return noteRelativePath.replace(/\.md$/i, "");
 }
 
-/**
- * Génère le Markdown de `sommaire.md` pour un dossier (enfants directs).
- * Retourne null si le dossier ne contient ni note (hors sommaire) ni sous-dossier.
- */
-export function buildFolderSommaireMarkdown(folderPath: string, entry: VaultEntry): string | null {
+export interface FolderInventory {
+  folderLabel: string;
+  notes: string[];
+  subdirs: { path: string; label: string; count: number }[];
+}
+
+function listFolderChildren(folderPath: string, entry: VaultEntry): FolderInventory {
   const folderLabel = folderPath ? vaultItemName(folderPath) : "Racine";
   const sommairePath = sommairePathForFolder(folderPath);
   const children = entry.children ?? [];
-
   const notes: string[] = [];
   const subdirs: { path: string; label: string; count: number }[] = [];
 
@@ -49,12 +50,60 @@ export function buildFolderSommaireMarkdown(folderPath: string, entry: VaultEntr
     }
   }
 
+  notes.sort((a, b) => noteStem(a).localeCompare(noteStem(b), "fr"));
+  subdirs.sort((a, b) => a.label.localeCompare(b.label, "fr"));
+  return { folderLabel, notes, subdirs };
+}
+
+/** Inventaire brut pour le prompt. Null si rien à indexer (pas de fausse rédaction). */
+export function collectFolderInventory(folderPath: string, entry: VaultEntry): FolderInventory | null {
+  const listed = listFolderChildren(folderPath, entry);
+  if (listed.notes.length === 0 && listed.subdirs.length === 0) return null;
+  return listed;
+}
+
+/** Contexte injecté dans Ollama — pas le fichier enregistré. */
+export function formatFolderInventoryContext(inv: FolderInventory): string {
+  const lines = [`Dossier : ${inv.folderLabel}`, ""];
+  if (inv.notes.length) {
+    lines.push("Notes :");
+    for (const p of inv.notes) lines.push(`- ${p} ([[${wikilinkPath(p)}]])`);
+    lines.push("");
+  }
+  if (inv.subdirs.length) {
+    lines.push("Sous-dossiers :");
+    for (const d of inv.subdirs) {
+      const countLabel = `${d.count} note${d.count === 1 ? "" : "s"}`;
+      lines.push(
+        `- ${d.label} (${countLabel}) — [[${wikilinkPath(sommairePathForFolder(d.path))}]]`,
+      );
+    }
+    lines.push("");
+  }
+  return `${lines.join("\n").trimEnd()}\n`;
+}
+
+/** Le sommaire rédigé cite chaque note et chaque sous-dossier de l'inventaire. */
+export function sommaireMentionsInventory(markdown: string, inv: FolderInventory): boolean {
+  const text = markdown.toLowerCase();
+  if (!text.trim()) return false;
+  const targets = [
+    ...inv.notes.map((p) => noteStem(p).toLowerCase()),
+    ...inv.subdirs.map((d) => d.label.toLowerCase()),
+  ].filter((t) => t.length >= 2);
+  if (!targets.length) return false;
+  return targets.every((t) => text.includes(t));
+}
+
+/**
+ * Génère le Markdown mécanique de `sommaire.md` (brique interne, pas l'exécution de la skill).
+ * Dossier vide : placeholder, que la skill n'enregistre pas.
+ */
+export function buildFolderSommaireMarkdown(folderPath: string, entry: VaultEntry): string | null {
+  const { folderLabel, notes, subdirs } = listFolderChildren(folderPath, entry);
   if (notes.length === 0 && subdirs.length === 0) {
     return buildEmptyFolderSommaire(folderPath);
   }
-
-  notes.sort((a, b) => noteStem(a).localeCompare(noteStem(b), "fr"));
-  subdirs.sort((a, b) => a.label.localeCompare(b.label, "fr"));
 
   const lines: string[] = [
     `# Sommaire · ${folderLabel}`,

@@ -2,9 +2,8 @@ import { describe, expect, it } from "vitest";
 import { isGroundedAppendix } from "./grounding";
 import {
   matchSkillFromText,
-  noteHasDecisionCue,
   NOTE_SKILLS,
-  runSkillLocal,
+  proposedWikilinksStayInVault,
   titleIsSolid,
   titleStaysOnTopic,
   withProposedTitle,
@@ -75,53 +74,26 @@ describe("matchSkillFromText", () => {
   });
 });
 
-describe("runSkillLocal", () => {
-  it("structures docker yaml without an LLM", () => {
-    const result = runSkillLocal("structure", DOCKER);
-    expect(result?.proposed).toContain("```yaml");
-    expect(result?.proposed).toContain("postgres:16");
+describe("catalogue LLM", () => {
+  it("fait rédiger chaque skill par Ollama", () => {
+    const missing = NOTE_SKILLS.filter(
+      (s) => !s.needsLlm || !(s.llmInstruction && s.llmInstruction.trim().length > 40),
+    ).map((s) => s.id);
+    expect(missing).toEqual([]);
   });
 
-  it("builds a daily template on empty notes", () => {
-    const result = runSkillLocal("template", "");
-    expect(result?.proposed).toContain("# Daily");
-    expect(result?.applyMode).toBe("replace");
+  it("demande à Décisions de dire qu'il n'y en a pas, sans filet local", () => {
+    const decisions = NOTE_SKILLS.find((s) => s.id === "decisions");
+    expect(decisions?.llmInstruction).toMatch(/Aucune décision déjà posée/i);
+    expect(decisions?.needsLlm).toBe(true);
   });
+});
 
-  it("liste les sources locales sans rien inventer", () => {
-    const note = "Voir https://example.com/alpha et aussi https://ollama.com/docs/guide.";
-    const result = runSkillLocal("sources", note);
-    expect(result?.applyMode).toBe("append");
-    expect(result?.proposed).toContain("## Sources");
-    expect(result?.proposed).toContain("https://example.com/alpha");
-    expect(result?.proposed).not.toContain("http://invente");
-    expect(runSkillLocal("sources", "Pas de lien ici.")).toBeNull();
-    expect(runSkillLocal("sources", `${note}\n\n## Sources\n\n- déjà`)).toBeNull();
-  });
-
-  it("ne fabrique pas de décision quand la note n'en pose pas", () => {
-    const empty = runSkillLocal("decisions", "Réunion sur le pain et le four.");
-    expect(noteHasDecisionCue("Réunion sur le pain et le four.")).toBe(false);
-    expect(empty?.proposed).toContain("Aucune décision déjà posée");
-    expect(empty?.proposed).not.toMatch(/migrer|postgres|budget/i);
-
-    const posed = "On a décidé de migrer vers Postgres.";
-    expect(noteHasDecisionCue(posed)).toBe(true);
-    expect(runSkillLocal("decisions", posed)).toBeNull();
-  });
-
-  it("corrige localement une faute connue pour Relire", () => {
-    const result = runSkillLocal("proofread", "Salu tu va bieng");
-    expect(result?.proposed.toLowerCase()).toContain("salut");
-    expect(result?.applyMode).toBe("replace");
-  });
-
-  it("formats related notes from a RAG block", () => {
-    const result = runSkillLocal("related", "note", {
-      ragBlock: "- [[Autre]] — extrait",
-    });
-    expect(result?.proposed).toContain("## Notes liées");
-    expect(result?.proposed).toContain("[[Autre]]");
+describe("proposedWikilinksStayInVault", () => {
+  it("accepte un titre du vault et refuse une note inventée", () => {
+    const note = "Voir le journal Docker demain.";
+    expect(proposedWikilinksStayInVault(note, "Voir le [[Docker]] demain.", ["Docker"])).toBe(true);
+    expect(proposedWikilinksStayInVault(note, "Voir [[Recette]] demain.", ["Docker"])).toBe(false);
   });
 });
 

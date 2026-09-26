@@ -4,6 +4,7 @@ import {
   extractUrls,
   formatExtractedLinksList,
   isLinkOnlyNote,
+  proposedUrlsStayInSource,
 } from "./links";
 
 describe("extractUrls", () => {
@@ -36,6 +37,14 @@ describe("extractLinksWithTitles", () => {
   it("formats a markdown list", () => {
     const html = `<A HREF="https://a.example/x">Alpha</A>`;
     expect(formatExtractedLinksList(html)).toBe("- [Alpha](https://a.example/x)");
+  });
+});
+
+describe("proposedUrlsStayInSource", () => {
+  it("refuse une URL absente de la note", () => {
+    const note = "Voir https://example.com/alpha";
+    expect(proposedUrlsStayInSource(note, "- https://example.com/alpha")).toBe(true);
+    expect(proposedUrlsStayInSource(note, "- https://invente.example/x")).toBe(false);
   });
 });
 

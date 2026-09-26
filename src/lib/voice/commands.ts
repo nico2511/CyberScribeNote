@@ -16,19 +16,21 @@ export const VOICE_COMMANDS: VoiceCommandInfo[] = [
     description: "Répare le Markdown (titres, blocs de code) sans changer le fond",
     category: "ia",
     requiresNote: true,
-    requiresOllama: false,
+    requiresOllama: true,
   },
   {
     phrase: "Scribe, sommaire",
     description: "Insère une table des matières depuis les titres",
     category: "ia",
     requiresNote: true,
+    requiresOllama: true,
   },
   {
     phrase: "Scribe, indexe dossier",
-    description: "Génère ou met à jour sommaire.md dans le dossier de la note",
+    description: "Rédige sommaire.md du dossier à partir de l'inventaire",
     category: "ia",
     requiresNote: true,
+    requiresOllama: true,
   },
   {
     phrase: "Scribe, plan",
@@ -63,6 +65,7 @@ export const VOICE_COMMANDS: VoiceCommandInfo[] = [
     description: "Propose un modèle (daily, CR, lecture, projet)",
     category: "ia",
     requiresNote: true,
+    requiresOllama: true,
   },
   {
     phrase: "Scribe, brief",
@@ -73,9 +76,10 @@ export const VOICE_COMMANDS: VoiceCommandInfo[] = [
   },
   {
     phrase: "Scribe, liées",
-    description: "Liste des notes du vault proches (RAG)",
+    description: "Notes du vault proches, rédigées à partir du RAG",
     category: "ia",
     requiresNote: true,
+    requiresOllama: true,
   },
   {
     phrase: "Scribe, actions",
@@ -131,6 +135,7 @@ export const VOICE_COMMANDS: VoiceCommandInfo[] = [
     description: "Liste les URL déjà présentes (sans aller les chercher)",
     category: "ia",
     requiresNote: true,
+    requiresOllama: true,
   },
   {
     phrase: "Scribe, résume",

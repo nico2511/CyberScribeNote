@@ -76,7 +76,7 @@ Extrais de CETTE note uniquement :
 2) ## Tâches — checklist des actions déjà mentionnées
 ```
 
-Le corps devient `llmInstruction` (ou la doc d’une skill locale). Un chargeur futur fusionne par `id` :
+Le corps devient `llmInstruction`. Un chargeur futur fusionne par `id` :
 
 1. vault `.scribe/skills/*.md` (prioritaire) ;
 2. skills bundlées avec l’app ;
@@ -86,12 +86,15 @@ Même `SkillId`, mêmes thèmes, même plan. v1 ne lit pas encore ces fichiers.
 
 ## Secours si Ollama est arrêté
 
-1. Le routeur v1 est **déterministe** (`source: "rules"`). Il ne contacte pas Ollama.
+1. Le **routeur** reste **déterministe** (`source: "rules"`). Ce n’est pas une skill : il choisit le plan, il ne rédige pas, il ne contacte pas Ollama.
 2. Crochet optionnel `classify` (synchrone). S’il lance, renvoie `null`, ou une confiance plus basse, le plan règles reste.
-3. Les skills `needsLlm: false` passent par `runSkillLocal` (sommaire, template, wikiliens, liées, réparation locale).
-4. Scribe propose encore un tip sans routeur texte : note vide, fence ouverte, lien seul, ou note longue sans brief ni tags (plan d’analyse).
+3. **Chaque skill du catalogue passe par Ollama** pour rédiger (`needsLlm: true`, `ollama_custom_prompt`). Indexer un dossier et les notes liées peuvent encore lire le vault ou le RAG en local, uniquement pour *collecter* le contexte injecté dans le prompt.
+4. Si Ollama est coupé : `ensureOllamaRunning`, puis les réglages. Aucune skill n’écrit une suggestion « comme l’IA » avec un filet local. L’échec est explicite, en français.
+5. Scribe propose encore un tip sans routeur texte : note vide, fence ouverte, lien seul, ou note longue sans brief ni tags (plan d’analyse). Le tip n’écrit rien.
 
-Lancer un plan ouvre le compagnon et enchaîne les skills. Chacune reste une **suggestion** à appliquer ou ignorer. Rien n’est écrit dans la note tout seul.
+Lancer un plan ouvre le compagnon et enchaîne les skills. Chacune reste une **suggestion** à appliquer ou ignorer, sauf Indexer dossier qui enregistre `sommaire.md` uniquement avec le texte renvoyé par Ollama. Rien n’est écrit dans la note tout seul.
+
+Il n’y a plus de promesse « skill locale, zéro hallucination » pour le catalogue. Les helpers (`extractUrls`, `repairLocalMarkdown`, etc.) restent des briques internes. La commande vocale « Scribe, corrige » n’est pas la skill Relire : c’est l’action IA corriger.
 
 ## Hors sujet
 

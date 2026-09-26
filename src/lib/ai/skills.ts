@@ -1,12 +1,4 @@
-import { hasMeaningfulDiff } from "$lib/ai/textDiff";
-import {
-  repairLocalMarkdown,
-  upsertOutline,
-  wrapWikilinks,
-} from "$lib/markdown/structure";
-import { buildTemplateMarkdown } from "$lib/ai/templates";
-import { extractUrls, formatExtractedLinksList, isLinkOnlyNote } from "$lib/ai/links";
-import { applyLocalCorrections } from "$lib/ai/localCorrect";
+import { extractUrls, isLinkOnlyNote } from "$lib/ai/links";
 import { noteBody, noteBodyRange, parseFrontmatterMeta } from "$lib/note/frontmatter";
 
 export type SkillId =
@@ -44,7 +36,7 @@ export interface NoteSkill {
   id: SkillId;
   label: string;
   hint: string;
-  /** true = Ollama. false = 100 % local, aucun risque d'hallucination. */
+  /** Toute skill du catalogue rédige via Ollama. Pas de résultat « local » présenté comme l'IA. */
   needsLlm: boolean;
   applyMode: "replace" | "append" | "tags";
   /** Autorise une note vide (templates). */
@@ -87,25 +79,35 @@ export const NOTE_SKILLS: NoteSkill[] = [
     id: "outline",
     label: "Sommaire",
     hint: "Table des matières depuis les titres",
-    needsLlm: false,
+    needsLlm: true,
     applyMode: "replace",
     group: "shape",
     theme: "construction",
     voice: /^(sommaire|outline|table des matieres|table des mati\w*)\b/,
     promptMatch: /\b(sommaire|outline|table des mati[eè]res)\b/i,
+    llmInstruction:
+      "Construis ou mets à jour la section ## Sommaire UNIQUEMENT à partir des titres H2 et plus déjà présents.\n" +
+      "N'invente aucun titre ni section.\n" +
+      "Conserve tout le reste du document (mots, code, liens).\n" +
+      "Réponds uniquement avec le document Markdown complet.",
     emptyMessage: "Pas assez de titres (H2+) pour un sommaire.",
   },
   {
     id: "folderIndex",
     label: "Indexer dossier",
-    hint: "Crée ou met à jour sommaire.md dans ce dossier",
-    needsLlm: false,
+    hint: "Rédige sommaire.md du dossier à partir de l'inventaire local",
+    needsLlm: true,
     applyMode: "replace",
     allowEmpty: true,
     group: "connect",
     theme: "documents",
     voice: /^(indexer?|indexe)(\s+(ce\s+)?dossier)?\b/,
     promptMatch: /\b(indexer|indexe)\s+(ce\s+)?dossier\b/i,
+    llmInstruction:
+      "Rédige le fichier sommaire.md de ce dossier en français, à partir de l'inventaire fourni.\n" +
+      "Inclus chaque note et chaque sous-dossier listés, comme wikilien [[chemin]].\n" +
+      "N'ajoute aucune note, aucun fait, aucune URL absents de l'inventaire.\n" +
+      "Réponds uniquement avec le Markdown du sommaire.",
     emptyMessage: "Ce dossier ne contient aucune note à indexer.",
   },
   {
@@ -164,13 +166,18 @@ export const NOTE_SKILLS: NoteSkill[] = [
     id: "template",
     label: "Template",
     hint: "Daily, CR, fiche de lecture, journal projet",
-    needsLlm: false,
+    needsLlm: true,
     applyMode: "replace",
     allowEmpty: true,
     group: "shape",
     theme: "prise-de-notes",
     voice: /^(template|modele|daily|journal)\b/,
     promptMatch: /\b(template|mod[eè]le de note|daily note)\b/i,
+    llmInstruction:
+      "Propose un modèle de note en français : daily, compte-rendu, fiche de lecture ou journal de projet, selon le contexte.\n" +
+      "Si la note est vide, réponds avec le document Markdown complet (titres et sections à remplir).\n" +
+      "Si la note a déjà du contenu, réponds uniquement par un bloc ## Template à ajouter, sans réécrire le texte existant.\n" +
+      "N'invente pas de noms, décisions ou faits absents du contexte.",
     emptyMessage: "Template indisponible.",
   },
   {
@@ -209,27 +216,38 @@ export const NOTE_SKILLS: NoteSkill[] = [
   {
     id: "related",
     label: "Liées",
-    hint: "Notes du vault sémantiquement proches (RAG)",
-    needsLlm: false,
+    hint: "Notes du vault sémantiquement proches (RAG), rédigées par Ollama",
+    needsLlm: true,
     applyMode: "append",
     wantsRag: true,
     group: "connect",
     theme: "connexion",
     voice: /^(liees?|related|notes? proches|similaires)\b/,
     promptMatch: /\b(notes? li[eé]es|notes? proches|similaires)\b/i,
+    llmInstruction:
+      "À partir UNIQUEMENT du contexte RAG fourni, rédige :\n" +
+      "## Notes liées\n" +
+      "- [[titre]] — court extrait déjà présent dans le contexte\n" +
+      "Si rien n'est pertinent, réponds exactement :\n" +
+      "## Notes liées\n\nAucune note liée pertinente dans le vault.\n" +
+      "N'invente aucune note ni extrait.",
     emptyMessage: "Aucune note liée trouvée (indexez le RAG dans Réglages).",
   },
   {
     id: "wikilinks",
     label: "[[Liens]]",
     hint: "Mentions → wikiliens vers le vault",
-    needsLlm: false,
+    needsLlm: true,
     applyMode: "replace",
     group: "connect",
     theme: "connexion",
     voice: /^(wikiliens?|wikilinks?)\b/,
     promptMatch: /\b(wikilinks?|wikiliens?|liens internes)\b/i,
-    emptyMessage: "Aucune mention d'une autre note à lier.",
+    llmInstruction:
+      "Transforme en [[wikiliens]] UNIQUEMENT les mentions des titres de vault fournis.\n" +
+      "N'invente pas de note. Ne change pas le fond.\n" +
+      "Réponds uniquement avec le document Markdown complet.",
+    emptyMessage: "Aucune autre note du vault à lier.",
   },
   {
     id: "actions",
@@ -350,13 +368,18 @@ export const NOTE_SKILLS: NoteSkill[] = [
   {
     id: "sources",
     label: "Sources",
-    hint: "Liste locale des URL déjà dans la note",
-    needsLlm: false,
+    hint: "Section Sources rédigée par Ollama, uniquement les URL déjà écrites",
+    needsLlm: true,
     applyMode: "append",
     group: "connect",
     theme: "documents",
     voice: /^(sources?|references?|bibliographie)\b/,
     promptMatch: /\b(sources?|r[eé]f[eé]rences?|bibliographie)\b/i,
+    llmInstruction:
+      "Rédige une section ## Sources qui liste UNIQUEMENT les URL déjà fournies.\n" +
+      "Pas de fetch, pas de nouvelle URL, pas de résumé inventé.\n" +
+      "Format :\n## Sources\n- [libellé court déjà dans la note, sinon le domaine](url)\n" +
+      "Réponds uniquement avec cette section.",
     emptyMessage: "Aucune URL à lister, ou la section Sources est déjà là.",
   },
 ];
@@ -389,98 +412,23 @@ export function matchSkillFromText(text: string): SkillId | null {
   return null;
 }
 
-export interface SkillLocalContext {
-  titles?: string[];
-  currentTitle?: string;
-  noteContext?: string;
-  /** Bloc RAG déjà formaté pour skill related. */
-  ragBlock?: string;
+/** Cibles `[[…]]` (sans ancre ni alias). */
+export function wikilinkTargets(markdown: string): string[] {
+  return [...markdown.matchAll(/\[\[([^\]|#]+)/g)].map((m) => m[1].trim()).filter(Boolean);
 }
 
-export interface SkillLocalResult {
-  proposed: string;
-  reason: string;
-  applyMode?: NoteSkill["applyMode"];
-}
-
-/** Exécute la partie déterministe d'une skill (0 hallucination). */
-export function runSkillLocal(
-  id: SkillId,
-  markdown: string,
-  ctx: SkillLocalContext = {},
-): SkillLocalResult | null {
-  if (id === "outline") {
-    const proposed = upsertOutline(markdown);
-    if (!proposed || !hasMeaningfulDiff(markdown, proposed)) return null;
-    return { proposed, reason: "Sommaire généré depuis les titres de la note." };
-  }
-  if (id === "structure") {
-    const proposed = repairLocalMarkdown(markdown);
-    if (!hasMeaningfulDiff(markdown, proposed)) return null;
-    return {
-      proposed,
-      reason: "Réparation locale (titres, fences, YAML/Docker).",
-    };
-  }
-  if (id === "wikilinks") {
-    const proposed = wrapWikilinks(markdown, ctx.titles ?? [], ctx.currentTitle);
-    if (!proposed || !hasMeaningfulDiff(markdown, proposed)) return null;
-    return { proposed, reason: "Mentions du vault transformées en [[wikiliens]]." };
-  }
-  if (id === "template") {
-    const { proposed, reason } = buildTemplateMarkdown(markdown, ctx.noteContext);
-    const mode: NoteSkill["applyMode"] = markdown.trim() ? "append" : "replace";
-    return { proposed, reason, applyMode: mode };
-  }
-  if (id === "related") {
-    const rag = (ctx.ragBlock ?? "").trim();
-    if (!rag) return null;
-    return {
-      proposed: `\n\n---\n\n## Notes liées\n\n${rag}\n`,
-      reason: "Extraits proches dans le vault (RAG).",
-      applyMode: "append",
-    };
-  }
-  if (id === "sources") {
-    if (hasMarkdownSection(markdown, "Sources")) return null;
-    const list = formatExtractedLinksList(markdown);
-    if (!list) return null;
-    return {
-      proposed: `\n\n## Sources\n\n${list}\n`,
-      reason: "URL et références déjà présentes dans la note.",
-      applyMode: "append",
-    };
-  }
-  if (id === "decisions") {
-    if (hasMarkdownSection(markdown, "Décisions")) return null;
-    if (noteHasDecisionCue(markdown)) return null;
-    return {
-      proposed: "\n\n## Décisions\n\nAucune décision déjà posée dans cette note.\n",
-      reason: "Aucune décision explicite dans la note — rien n'a été inventé.",
-      applyMode: "append",
-    };
-  }
-  if (id === "proofread") {
-    const proposed = applyLocalCorrections(markdown);
-    if (!hasMeaningfulDiff(markdown, proposed)) return null;
-    return {
-      proposed,
-      reason: "Corrections locales (orthographe courante), sans Ollama.",
-      applyMode: "replace",
-    };
-  }
-  return null;
-}
-
-const DECISION_CUE_RE =
-  /\b(decid\w*|decision\w*|arbitrage\w*|on retient|valide que|tranch\w*)\b/i;
-
-/** Vrai s'il y a déjà une décision écrite (après suppression des accents). */
-export function noteHasDecisionCue(markdown: string): boolean {
-  const n = markdown
-    .normalize("NFD")
-    .replace(/\p{M}/gu, "");
-  return DECISION_CUE_RE.test(n);
+/**
+ * Les wikiliens nouveaux doivent être des titres du vault (ou déjà présents dans la note).
+ */
+export function proposedWikilinksStayInVault(
+  original: string,
+  proposed: string,
+  titles: string[],
+): boolean {
+  const allowed = new Set(
+    [...titles, ...wikilinkTargets(original)].map((t) => t.trim().toLowerCase()).filter(Boolean),
+  );
+  return wikilinkTargets(proposed).every((t) => allowed.has(t.toLowerCase()));
 }
 
 export function hasMarkdownSection(markdown: string, title: string): boolean {

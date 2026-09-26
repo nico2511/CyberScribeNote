@@ -332,7 +332,7 @@
         <p class="mt-0.5 text-[9px] text-text-muted">
           Raccourcis optionnels. Le prompt ci-dessus n'est jamais détourné.
           {#if !ollamaAvailable}
-            {" "}Lien, points clés, tags, brief et plan demandent Ollama.
+            {" "}Toutes les skills passent par Ollama.
           {/if}
         </p>
         <div class="mt-1.5 space-y-2">
