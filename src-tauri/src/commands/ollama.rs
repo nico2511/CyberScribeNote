@@ -34,11 +34,18 @@ struct OllamaGenOptions {
     top_p: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     num_ctx: Option<u32>,
+    /// Cap de tokens générés — sans ça, certains modèles bouclent jusqu'à remplir le ctx.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    num_predict: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repeat_penalty: Option<f32>,
 }
 
 struct GenerateParams {
     temperature: f32,
     system: Option<String>,
+    num_predict: Option<i32>,
+    repeat_penalty: Option<f32>,
 }
 
 fn generate_params(kind: &str) -> GenerateParams {
@@ -46,26 +53,39 @@ fn generate_params(kind: &str) -> GenerateParams {
         "correct" | "proactive" => GenerateParams {
             temperature: 0.0,
             system: Some(FAITHFUL_SYSTEM.into()),
+            num_predict: Some(2048),
+            repeat_penalty: Some(1.1),
         },
         "custom" => GenerateParams {
             temperature: 0.1,
             system: Some(FAITHFUL_SYSTEM.into()),
+            // Notes longues (favoris, dumps) : assez large, mais borné pour couper les boucles.
+            num_predict: Some(8192),
+            repeat_penalty: Some(1.15),
         },
         "translate" => GenerateParams {
             temperature: 0.15,
             system: Some(FAITHFUL_SYSTEM.into()),
+            num_predict: Some(4096),
+            repeat_penalty: Some(1.1),
         },
         "reformulate" => GenerateParams {
             temperature: 0.25,
             system: Some(FAITHFUL_SYSTEM.into()),
+            num_predict: Some(4096),
+            repeat_penalty: Some(1.1),
         },
         "summarize" => GenerateParams {
             temperature: 0.3,
             system: Some(FAITHFUL_SYSTEM.into()),
+            num_predict: Some(1024),
+            repeat_penalty: Some(1.1),
         },
         _ => GenerateParams {
             temperature: 0.2,
             system: Some(FAITHFUL_SYSTEM.into()),
+            num_predict: Some(4096),
+            repeat_penalty: Some(1.1),
         },
     }
 }
@@ -689,6 +709,8 @@ async fn ollama_generate_with(
             temperature: params.temperature,
             top_p: Some(0.9),
             num_ctx: Some(num_ctx),
+            num_predict: params.num_predict,
+            repeat_penalty: params.repeat_penalty,
         }),
     };
 
