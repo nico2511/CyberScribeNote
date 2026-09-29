@@ -173,9 +173,10 @@ Sortie : `src-tauri/target/release/cyberscribe-note.exe`
 6. ~~Auto-start Ollama + prompts custom extraction (favoris)~~ (v0.5.7)
 7. ~~Import documents MarkItDown (PDF / Office → MD)~~ (v0.5.8)
 8. ~~Cerveau Scribe : skills combinables (routeur + plans du buddy)~~ (v0.5.9)
-9. Vérification de nouvelle release (zip manuel, sans updater signé) — même livraison v0.5.9
-10. Templates / graph · E2E Tauri
-11. Bundling NSIS + updater (+ Authenticode) · builds Linux
+9. ~~Vérification de nouvelle release (zip manuel, sans updater signé)~~ (v0.5.9)
+10. ~~Fix prompt custom en boucle (anti-réentrée + plafond Ollama)~~ (v0.5.10)
+11. Templates / graph · E2E Tauri
+12. Bundling NSIS + updater (+ Authenticode) · builds Linux
 
 Détail plan : [Docs/CyberScribe_Notes_Plan.md](Docs/CyberScribe_Notes_Plan.md).
 
