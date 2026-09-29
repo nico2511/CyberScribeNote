@@ -103,6 +103,8 @@
   let dragging = $state(false);
   let dragOffset = $state({ x: 0, y: 0 });
   let lastDictationPromptId = $state<number | null>(null);
+  /** true après la 1re hydratation de l'ouverture courante du panneau. */
+  let wasOpen = $state(false);
 
   const voiceCategories = ["dictée", "ia", "navigation"] as const;
 
@@ -139,12 +141,20 @@
     if (notePath) contextExpanded = false;
   });
 
+  // Hydrate une seule fois à l'ouverture (évite de réécraser le prompt / la pos à chaque tick).
   $effect(() => {
-    if (open && typeof window !== "undefined") {
-      panelSize = loadCompanionPanelSize();
-      pos = loadCompanionPanelPos() ?? defaultCompanionPanelPos(panelSize);
-      customPrompt = loadCustomPrompt();
+    if (!open || typeof window === "undefined") {
+      wasOpen = false;
+      return;
     }
+    if (wasOpen) return;
+    wasOpen = true;
+    const size = loadCompanionPanelSize();
+    const savedPos = loadCompanionPanelPos() ?? defaultCompanionPanelPos(size);
+    const prompt = loadCustomPrompt();
+    panelSize = size;
+    if (pos.x !== savedPos.x || pos.y !== savedPos.y) pos = savedPos;
+    if (customPrompt !== prompt) customPrompt = prompt;
   });
 
   $effect(() => {
@@ -172,12 +182,14 @@
 
   function submitCustomPrompt() {
     const trimmed = customPrompt.trim();
-    if (!trimmed || aiLoading) return;
+    if (!trimmed || aiLoading || proactiveLoading) return;
     saveCustomPrompt(customPrompt);
     onCustomPrompt(trimmed);
   }
 
   function onCustomPromptKeydown(e: KeyboardEvent) {
+    // e.repeat : maintenir Ctrl+Entrée ne doit pas relancer N fois le prompt.
+    if (e.repeat) return;
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
       submitCustomPrompt();

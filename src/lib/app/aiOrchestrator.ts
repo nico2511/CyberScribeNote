@@ -631,6 +631,11 @@ export async function runSkill(deps: AiOrchestratorDeps, id: SkillId): Promise<v
 
 export async function runCustomPrompt(deps: AiOrchestratorDeps, instruction: string): Promise<void> {
   if (!instruction.trim() || !deps.selectedPath) return;
+  // Empêche Ctrl+Entrée en auto-répétition / double-clic de lancer N appels Ollama en parallèle.
+  if (aiQueue.aiLoading || aiQueue.proactiveLoading) {
+    deps.setStatus("Une requête IA est déjà en cours — attendez la fin.");
+    return;
+  }
 
   const epoch = noteSession.aiEpoch;
   const pathAtStart = deps.selectedPath;
@@ -652,39 +657,40 @@ export async function runCustomPrompt(deps: AiOrchestratorDeps, instruction: str
     /\b(lien|liens|urls?|http)\b/i.test(trimmedInstruction) &&
     instructionIsDerivedOutput(trimmedInstruction);
 
-  if (!deps.ollamaAvailable) {
-    const started = await deps.ensureOllamaRunning(true);
-    if (!started) {
-      const localList = wantsLocalLinks ? formatExtractedLinksList(targetText) : null;
-      if (localList) {
-        aiQueue.companionOpen = true;
-        pushSuggestion({
-          action: "custom",
-          label,
-          scope,
-          proposedText: localList,
-          originalText: targetText,
-          source: "manual",
-          notePath: pathAtStart,
-          reason: `${trimmedInstruction} — Ollama est arrêté, URL déjà écrites uniquement.`,
-          selection: sel ? { start: sel.start, end: sel.end, text: sel.text } : undefined,
-        });
-        deps.setStatus(
-          `Ollama est arrêté — liste des liens déjà présents (${localList.split("\n").length}), sans rédaction IA.`,
-        );
-        return;
-      }
-      deps.openSettings();
-      deps.setStatus("Configurez ou démarrez Ollama dans les réglages.");
-      return;
-    }
-  }
-
+  // Verrouiller tout de suite (avant ensureOllama) pour que le bouton / Ctrl+Entrée restent bloqués.
   aiQueue.aiLoading = true;
   aiQueue.companionOpen = true;
-  deps.setStatus(`Prompt custom (${scope}) — en cours…`);
 
   try {
+    if (!deps.ollamaAvailable) {
+      const started = await deps.ensureOllamaRunning(true);
+      if (!started) {
+        const localList = wantsLocalLinks ? formatExtractedLinksList(targetText) : null;
+        if (localList) {
+          pushSuggestion({
+            action: "custom",
+            label,
+            scope,
+            proposedText: localList,
+            originalText: targetText,
+            source: "manual",
+            notePath: pathAtStart,
+            reason: `${trimmedInstruction} — Ollama est arrêté, URL déjà écrites uniquement.`,
+            selection: sel ? { start: sel.start, end: sel.end, text: sel.text } : undefined,
+          });
+          deps.setStatus(
+            `Ollama est arrêté — liste des liens déjà présents (${localList.split("\n").length}), sans rédaction IA.`,
+          );
+          return;
+        }
+        deps.openSettings();
+        deps.setStatus("Configurez ou démarrez Ollama dans les réglages.");
+        return;
+      }
+    }
+
+    deps.setStatus(`Prompt custom (${scope}) — en cours…`);
+
     const wantsRag = instructionWantsVaultContext(trimmedInstruction);
     const result = await invoke<string>("ollama_custom_prompt", {
       instruction: trimmedInstruction,

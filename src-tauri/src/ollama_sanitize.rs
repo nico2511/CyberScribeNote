@@ -98,11 +98,77 @@ pub fn sanitize_ai_response(raw: &str, action: &str, original: &str) -> String {
         }
     }
 
+    text = truncate_repetitive_output(text.trim());
+
     if text.is_empty() {
         original.to_string()
     } else {
         text
     }
+}
+
+/// Coupe une sortie modèle qui répète le même bloc (boucle de tokens).
+fn truncate_repetitive_output(text: &str) -> String {
+    let t = text;
+    if t.len() < 160 {
+        return t.to_string();
+    }
+
+    let lines: Vec<&str> = t.split('\n').collect();
+    if lines.len() >= 6 {
+        let max_block = std::cmp::min(24, lines.len() / 3);
+        for block_lines in 1..=max_block {
+            let block = lines[lines.len() - block_lines..].join("\n");
+            if block.trim().len() < 16 {
+                continue;
+            }
+            let unique: std::collections::HashSet<char> =
+                block.chars().filter(|c| !c.is_whitespace()).collect();
+            if unique.len() < 4 {
+                continue;
+            }
+            let mut count = 0usize;
+            let mut end = lines.len();
+            while end >= block_lines {
+                let slice = lines[end - block_lines..end].join("\n");
+                if slice != block {
+                    break;
+                }
+                count += 1;
+                end -= block_lines;
+            }
+            if count >= 3 {
+                return lines[..end + block_lines].join("\n").trim_end().to_string();
+            }
+        }
+    }
+
+    let max_size = std::cmp::min(180, t.len() / 3);
+    let mut size = max_size;
+    while size >= 40 {
+        let needle = &t[t.len() - size..];
+        if needle.trim().is_empty() {
+            size -= 1;
+            continue;
+        }
+        let unique: std::collections::HashSet<char> =
+            needle.chars().filter(|c| !c.is_whitespace()).collect();
+        if unique.len() < 4 {
+            size -= 1;
+            continue;
+        }
+        let mut count = 0usize;
+        let mut idx = t.len();
+        while idx >= size && &t[idx - size..idx] == needle {
+            count += 1;
+            idx -= size;
+        }
+        if count >= 3 {
+            return t[..idx + size].trim_end().to_string();
+        }
+        size -= 1;
+    }
+    t.to_string()
 }
 
 /** Heuristique anti-dérive : une « correction » doit ressembler à l'original. */
@@ -216,5 +282,15 @@ mod tests {
         assert!(out.contains("```yaml"));
         assert!(out.contains("# Stacks"));
         assert!(out.contains("- [web](#web)"));
+    }
+
+    #[test]
+    fn truncates_repetitive_tail() {
+        let block =
+            "- [Site Alpha](https://example.com/alpha)\n- [Site Beta](https://example.com/beta)\n";
+        let looped = format!("Intro\n\n{}", block.repeat(6));
+        let out = truncate_repetitive_output(&looped);
+        assert!(out.len() < looped.len());
+        assert!(out.starts_with("Intro"));
     }
 }
